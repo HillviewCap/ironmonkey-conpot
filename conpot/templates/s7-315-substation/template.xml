@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Siemens S7-315-2 PN/DP substation emulation template for Conpot.
+  Designed as an INDUSTROYER/CRASHOVERRIDE-style trap (Story 17.3 AC #2, #3).
+  IEC-104 ASDU types 45/46/50/58 (command codes) are highest-signal captures.
+
+  All Conpot-default identifier strings (copyright, as_name) have been
+  removed or replaced so standard Shodan/Censys honeypot signatures don't
+  trivially classify this instance. Operator MUST keep this rule on any
+  future template edits.
+-->
+<conpot_template name="s7-315-substation" version="1.0">
+
+  <core>
+    <databus>
+      <key_value_mappings>
+        <!-- S7 identification (returned in SZL 0x011C / 0x0011 responses) -->
+        <key name="SystemName">
+          <value type="value">'S7-315-CPU'</value>
+        </key>
+        <key name="PlantIdentifier">
+          <value type="value">'SUBSTATION-01'</value>
+        </key>
+        <key name="ModuleType">
+          <value type="value">'CPU 315-2 PN/DP'</value>
+        </key>
+        <key name="Module">
+          <value type="value">'6ES7 315-2EH14-0AB0'</value>
+        </key>
+        <key name="SerialNumber">
+          <value type="value">'S C-J9KB4281'</value>
+        </key>
+
+        <!-- Modbus holding-register backing values
+             (IEC 61850-aligned power metering, 10× scaling per Siemens
+             SENTRON PAC convention). Values returned on FC-3 reads. -->
+        <key name="hr_voltage_l1">    <value type="value">2300</value></key>  <!-- 230.0 V -->
+        <key name="hr_voltage_l2">    <value type="value">2298</value></key>
+        <key name="hr_voltage_l3">    <value type="value">2301</value></key>
+        <key name="hr_current_a">     <value type="value">142</value></key>   <!-- 14.2 A -->
+        <key name="hr_frequency">     <value type="value">499</value></key>   <!-- 49.9 Hz -->
+        <key name="hr_power_factor">  <value type="value">979</value></key>   <!-- 0.979 -->
+        <key name="hr_active_power">  <value type="value">327</value></key>   <!-- 32.7 kW -->
+        <key name="hr_energy_hi">     <value type="value">0</value></key>
+        <key name="hr_energy_lo">     <value type="value">8421</value></key>
+        <key name="hr_status_word">   <value type="value">1</value></key>     <!-- 1=Running -->
+      </key_value_mappings>
+    </databus>
+  </core>
+
+  <!-- S7Comm PLC identity — Siemens S7-315-2 PN/DP (6ES7 315-2EH14-0AB0).
+       NOTE: `<as_name>` removed — it's a Conpot-specific element with no
+       counterpart on real S7-315 SNMP/SZL output and is a fingerprint. -->
+  <s7comm>
+    <system_name>S7-315-CPU</system_name>
+    <plant_id>SUBSTATION-01</plant_id>
+    <module_type>CPU 315-2 PN/DP</module_type>
+    <module>6ES7 315-2EH14-0AB0</module>
+    <serial_number>S C-J9KB4281</serial_number>
+    <copyright>SIMATIC S7-300 V3.3</copyright>
+  </s7comm>
+
+  <!-- IEC-104 — substation control, k=12/w=8 per IEC 60870-5-104 §12 -->
+  <IEC104>
+    <host>0.0.0.0</host>
+    <port>2404</port>
+    <k>12</k>
+    <w>8</w>
+    <t0>30</t0>
+    <t1>15</t1>
+    <t2>10</t2>
+    <t3>20</t3>
+    <asdu_address>1</asdu_address>
+    <!-- High-value ASDU monitoring types: 1=M_SP, 3=M_DP, 13=M_ME_NC, 30=M_SP_TA -->
+    <!-- Command types indicating active OT exploitation:
+         45=C_SC, 46=C_DC, 50=C_SE_NC, 58=C_SC_TA -->
+    <databus_mapping>
+      <asdu type="1" name="sp_status_01">0</asdu>
+      <asdu type="3" name="dp_status_01">0</asdu>
+      <asdu type="13" name="me_nc_value">0.0</asdu>
+      <asdu type="30" name="sp_event_01">0</asdu>
+    </databus_mapping>
+  </IEC104>
+
+  <!-- Modbus — power metering RTU. Holding registers backed by the databus
+       keys defined under <core>. FC-3 reads of addr 0–9 return the power
+       metering values; FC-1/FC-2 reads of coils return 0; writes (FC-5/6/15/16)
+       are logged and acknowledged. -->
+  <modbus>
+    <device_info>
+      <vendor_name>Siemens AG</vendor_name>
+      <product_code>S7-315-2EH14</product_code>
+      <vendor_url>http://www.siemens.com/</vendor_url>
+      <product_name>SENTRON PAC3200 Substation Meter</product_name>
+      <model_name>PAC3200</model_name>
+      <major_minor_revision>V3.3.14</major_minor_revision>
+    </device_info>
+    <slaves>
+      <slave id="1">
+        <blocks>
+          <block name="HoldingRegisters">
+            <type>HOLDING_REGISTERS</type>
+            <starting_address>0</starting_address>
+            <size>10</size>
+            <values>
+              <value index="0"><databus_key>hr_voltage_l1</databus_key></value>
+              <value index="1"><databus_key>hr_voltage_l2</databus_key></value>
+              <value index="2"><databus_key>hr_voltage_l3</databus_key></value>
+              <value index="3"><databus_key>hr_current_a</databus_key></value>
+              <value index="4"><databus_key>hr_frequency</databus_key></value>
+              <value index="5"><databus_key>hr_power_factor</databus_key></value>
+              <value index="6"><databus_key>hr_active_power</databus_key></value>
+              <value index="7"><databus_key>hr_energy_hi</databus_key></value>
+              <value index="8"><databus_key>hr_energy_lo</databus_key></value>
+              <value index="9"><databus_key>hr_status_word</databus_key></value>
+            </values>
+          </block>
+          <block name="Coils">
+            <type>COILS</type>
+            <starting_address>0</starting_address>
+            <size>16</size>
+          </block>
+        </blocks>
+      </slave>
+    </slaves>
+  </modbus>
+
+  <!-- HTTP — SCADA HMI login page with Siemens CP443-1 banner -->
+  <http>
+    <host>0.0.0.0</host>
+    <port>8800</port>
+    <global>
+      <headers>
+        <header>
+          <field>Server</field>
+          <value>Siemens CP443-1 Advanced V3.3.0</value>
+        </header>
+        <header>
+          <field>X-Powered-By</field>
+          <value>SIMATIC WinCC</value>
+        </header>
+      </headers>
+    </global>
+    <htdocs>
+      <path>/</path>
+      <file>index.html</file>
+    </htdocs>
+  </http>
+
+</conpot_template>

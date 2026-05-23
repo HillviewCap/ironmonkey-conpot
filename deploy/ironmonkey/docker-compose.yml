@@ -1,0 +1,58 @@
+# Conpot OT honeypot + forwarder sidecar for the IronMonkey threat-intel platform.
+#
+# This compose file lives separately from the upstream-Conpot root
+# docker-compose.yml so it doesn't conflict with the upstream dev workflow.
+# Run from THIS directory: `cd deploy/ironmonkey && docker compose up -d --build`.
+#
+# Deployment targets:
+#   - snakeplskn (test bench): SENSOR_ID=sensor-lab-snakeplskn-01-ot routes
+#     OT events to stix:honeypot:lab:queue and skips MISP side-write
+#   - VPS production (future): SENSOR_ID=sensor-nyc-01-ot, .env overrides
+#     point IRONPOT_URL=http://snakeplskn:8003 and REDIS_URL=redis://snakeplskn:6379/0
+#     via Tailscale
+#
+# The forwarder uses network_mode: host so it can reach IronPot on
+# localhost:8003 (snakeplskn) without manual docker-network plumbing.
+# Conpot stays in default bridge mode so its port mappings work normally.
+
+services:
+  conpot:
+    # Upstream honeynet/conpot is the canonical Docker Hub image. Pinned to
+    # 0.6.0 (last upstream release as of 2026-05). If the image pull fails
+    # on snakeplskn, switch to `build: ../..` to build from this fork's source.
+    image: honeynet/conpot:0.6.0
+    container_name: ironmonkey-conpot
+    restart: unless-stopped
+    volumes:
+      - ../../conpot/templates/s7-315-substation:/etc/conpot/templates/s7-315-substation:ro
+      - conpot-logs:/var/log/conpot
+    ports:
+      # Standard OT ports exposed on host → Conpot non-privileged internal ports
+      - "502:5020"      # Modbus/TCP
+      - "102:10201"     # S7Comm (ISO-TSAP)
+      - "2404:2404"     # IEC-104
+      - "8088:8800"     # SCADA HTTP (WinCC banner). Host port 8088 on
+                        # snakeplskn (8080 belongs to Homer, 80 is reserved).
+                        # On VPS prod, override to 80 in a per-host compose.
+    command: >
+      -t /etc/conpot/templates/s7-315-substation/template.xml
+      --logfile /var/log/conpot/conpot.json
+      --logger json
+
+  conpot-forwarder:
+    build: ./forwarder
+    image: ironmonkey-conpot-forwarder:local
+    container_name: ironmonkey-conpot-forwarder
+    restart: unless-stopped
+    # Host network so the forwarder can reach IronPot at localhost:8003
+    # (snakeplskn test) or snakeplskn:8003 over Tailscale (VPS prod).
+    network_mode: host
+    volumes:
+      - conpot-logs:/var/log/conpot:ro
+    env_file:
+      - ./forwarder/.env
+    depends_on:
+      - conpot
+
+volumes:
+  conpot-logs:

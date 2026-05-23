@@ -71,3 +71,4 @@ ConpotTempFS/
 docs/source/api/reference
 
 junit/
+deploy/ironmonkey/forwarder/.env
