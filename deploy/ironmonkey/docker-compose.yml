@@ -29,6 +29,7 @@ services:
     restart: unless-stopped
     volumes:
       - ../../conpot/templates/s7-315-substation:/etc/conpot/templates/s7-315-substation:ro
+      - ./conpot.cfg:/etc/conpot/conpot.cfg:ro
       - conpot-logs:/var/log/conpot
     ports:
       # Standard OT ports exposed on host → Conpot non-privileged internal ports
@@ -38,10 +39,11 @@ services:
       - "8088:8800"     # SCADA HTTP (WinCC banner). Host port 8088 on
                         # snakeplskn (8080 belongs to Homer, 80 is reserved).
                         # On VPS prod, override to 80 in a per-host compose.
+    # Conpot 0.6.0 doesn't accept a CLI flag for JSON logging -- it must be
+    # enabled via the [json] section of conpot.cfg (mounted above).
     command: >
+      -c /etc/conpot/conpot.cfg
       -t /etc/conpot/templates/s7-315-substation/template.xml
-      --logfile /var/log/conpot/conpot.json
-      --logger json
 
   conpot-forwarder:
     build: ./forwarder
