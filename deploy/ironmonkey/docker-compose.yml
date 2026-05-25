@@ -51,7 +51,7 @@ services:
     command: >
       -c /etc/conpot/conpot.cfg
       -t default
-      --temp_dir /tmp/conpot
+      --temp_dir /tmp
 
   conpot-forwarder:
     build: ./forwarder
