@@ -17,10 +17,14 @@
 
 services:
   conpot:
-    # Upstream honeynet/conpot is the canonical Docker Hub image. Pinned to
-    # 0.6.0 (last upstream release as of 2026-05). If the image pull fails
-    # on snakeplskn, switch to `build: ../..` to build from this fork's source.
-    image: honeynet/conpot:0.6.0
+    # honeynet/conpot on Docker Hub only publishes :latest -- no versioned
+    # tags exist (verified 2026-05-25). To get a deterministic pin we build
+    # from this fork's Dockerfile; the commit SHA on the checked-out branch
+    # is the version.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ironmonkey-conpot:local
     container_name: ironmonkey-conpot
     restart: unless-stopped
     volumes:
