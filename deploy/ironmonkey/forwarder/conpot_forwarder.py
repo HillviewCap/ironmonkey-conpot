@@ -72,17 +72,54 @@ def _get_parent_session_id(source_ip: str) -> str | None:
         return None
 
 
-def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
-    remote = record.get("remote") or {}
-    local = record.get("local") or {}
-    data_type = (record.get("data_type") or "unknown").lower()
-    request = record.get("request") or {}
+def _parse_modbus_request(raw: str | None) -> dict[str, int]:
+    """Extract FC / start / count from Conpot's stringified Modbus PDU.
 
-    source_ip = remote.get("ip")
+    Conpot logs `request` as a Python repr like `b'00010000000601030000000a'`
+    -- the full MBAP+PDU as hex inside a bytes literal. Layout:
+      [0..1]  txid    [2..3]  proto   [4..5]  len   [6] unit
+      [7]     fc      [8..9]  start   [10..11] count
+    Returns {} on parse failure (forwarder still POSTs without structured
+    fields rather than dropping the event).
+    """
+    if not raw:
+        return {}
+    cleaned = raw.strip()
+    if cleaned.startswith("b'") and cleaned.endswith("'"):
+        cleaned = cleaned[2:-1]
+    elif cleaned.startswith('b"') and cleaned.endswith('"'):
+        cleaned = cleaned[2:-1]
+    try:
+        b = bytes.fromhex(cleaned)
+    except ValueError:
+        return {}
+    if len(b) < 12:
+        return {}
+    return {
+        "function_code": b[7],
+        "start_address": int.from_bytes(b[8:10], "big"),
+        "count": int.from_bytes(b[10:12], "big"),
+    }
+
+
+def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    # Skip connection lifecycle records -- they have no PDU and would
+    # produce empty bundles. Only forward records with an actual exchange.
+    event_type = record.get("event_type")
+    if event_type in ("NEW_CONNECTION", "CONNECTION_LOST"):
+        return None
+
+    data_type = (record.get("data_type") or "unknown").lower()
+    request = record.get("request")
+
+    # Conpot 0.6.0 emits flat src_ip/src_port/dst_port at the top level
+    # (the nested remote/local shape some older docs reference does not
+    # match the actual JSON output of this version).
+    source_ip = record.get("src_ip")
     if not source_ip:
         return None
 
-    internal_port = local.get("port") or 0
+    internal_port = record.get("dst_port") or 0
     try:
         dst_port = _PORT_MAP.get(int(internal_port), int(internal_port))
     except (TypeError, ValueError):
@@ -95,14 +132,19 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
     }
 
     if data_type == "modbus":
-        protocol_data["function_code"] = request.get("function_code")
-        protocol_data["start_address"] = request.get("start_address")
-        protocol_data["count"] = request.get("count")
-    elif data_type in ("iec104", "iec-104"):
+        # `request` is a string like `b'00010000000601030000000a'` in 0.6.0;
+        # parse it back into structured FC/start/count for downstream.
+        if isinstance(request, str):
+            protocol_data.update(_parse_modbus_request(request))
+        elif isinstance(request, dict):
+            protocol_data["function_code"] = request.get("function_code")
+            protocol_data["start_address"] = request.get("start_address")
+            protocol_data["count"] = request.get("count")
+    elif data_type in ("iec104", "iec-104") and isinstance(request, dict):
         protocol_data["type_id"] = request.get("type_id")
         protocol_data["cot"] = request.get("cot")
         protocol_data["ioa"] = request.get("ioa")
-    elif data_type == "s7comm":
+    elif data_type == "s7comm" and isinstance(request, dict):
         protocol_data["s7_function"] = request.get("function")
 
     # Drop None values to keep the payload compact.
