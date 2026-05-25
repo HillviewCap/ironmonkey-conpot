@@ -28,7 +28,14 @@ services:
     container_name: ironmonkey-conpot
     restart: unless-stopped
     volumes:
-      - ../../conpot/templates/s7-315-substation:/etc/conpot/templates/s7-315-substation:ro
+      # NOTE: the S7-315 substation template at ../../conpot/templates/s7-315-substation
+      # is the single-file form Story 17.3 originally drafted. Conpot 0.6.0
+      # requires a directory tree (template.xml + per-protocol XMLs in
+      # subdirs: modbus/modbus.xml, s7comm/s7comm.xml, http/http.xml +
+      # http/htdocs/, IEC104/IEC104.xml). Decomposing it is tracked as a
+      # follow-up story; for now we use the in-image 'default' template
+      # (Siemens S7-200, baseline modbus + s7comm + http + snmp) so the
+      # IT->OT chain pipeline can be validated end-to-end.
       - ./conpot.cfg:/etc/conpot/conpot.cfg:ro
       - conpot-logs:/var/log/conpot
     ports:
@@ -43,7 +50,7 @@ services:
     # enabled via the [json] section of conpot.cfg (mounted above).
     command: >
       -c /etc/conpot/conpot.cfg
-      -t /etc/conpot/templates/s7-315-substation/template.xml
+      -t default
 
   conpot-forwarder:
     build: ./forwarder
