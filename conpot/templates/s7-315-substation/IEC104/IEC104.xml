@@ -23,49 +23,54 @@
         <vendor_name>Siemens AG</vendor_name>
         <product_code>S7-315-2EH14</product_code>
     </device_info>
+    <!-- Register `name` attributes are IOA (Information Object Address)
+         in structured 16_8 format (0..65535_0..255) per
+         DeviceDataController.py:42. They are NOT human-readable labels —
+         those live as comments and as the databus key names referenced by
+         <value>. -->
     <categories>
         <!-- M_SP_NA_1 — substation breaker/disconnector status -->
         <category name="SinglePoint" id="1">
-            <register name="bus_a_breaker_closed">
+            <register name="13_20">  <!-- bus A breaker closed -->
                 <value>bus_a_breaker_closed</value>
             </register>
-            <register name="bus_b_breaker_closed">
+            <register name="13_21">  <!-- bus B breaker closed -->
                 <value>bus_b_breaker_closed</value>
             </register>
-            <register name="transformer_1_online">
+            <register name="13_22">  <!-- transformer 1 online -->
                 <value>transformer_1_online</value>
             </register>
         </category>
 
         <!-- M_DP_NA_1 — switch disconnector double-point state -->
         <category name="DoublePoint" id="3">
-            <register name="switch_disconnector_1_state">
+            <register name="11_30">  <!-- switch disconnector 1 state -->
                 <value>switch_disconnector_1_state</value>
             </register>
-            <register name="switch_disconnector_2_state">
+            <register name="11_31">  <!-- switch disconnector 2 state -->
                 <value>switch_disconnector_2_state</value>
             </register>
         </category>
 
         <!-- M_ME_NC_1 — voltage/current/oil-temp short-float telemetry -->
         <category name="MeasuredValueFloatingPoint" id="13">
-            <register name="voltage_bus_a">
+            <register name="17_40">  <!-- voltage bus A -->
                 <value>voltage_bus_a</value>
             </register>
-            <register name="current_line_1">
+            <register name="17_41">  <!-- current line 1 -->
                 <value>current_line_1</value>
             </register>
-            <register name="transformer_2_oil_temp">
+            <register name="17_42">  <!-- transformer 2 oil temperature -->
                 <value>transformer_2_oil_temp</value>
             </register>
         </category>
 
         <!-- M_SP_TB_1 — single-point alarms with CP56Time2a timestamp -->
         <category name="SinglePointWithCP56Time2a" id="30">
-            <register name="alarm_overcurrent">
+            <register name="22_50">  <!-- overcurrent alarm -->
                 <value>alarm_overcurrent</value>
             </register>
-            <register name="alarm_undervoltage">
+            <register name="22_51">  <!-- undervoltage alarm -->
                 <value>alarm_undervoltage</value>
             </register>
         </category>
