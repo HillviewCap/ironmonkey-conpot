@@ -1,0 +1,72 @@
+<!--
+  HTTP — SCADA HMI login page with Siemens CP443-1 banner.
+
+  XSD constraint: <global>/<headers>/<entity> has maxOccurs=1 (single
+  entity allowed in the global headers block). The substation Server and
+  X-Powered-By banners are therefore set per-node under /<headers>/<entity>
+  (which IS maxOccurs="unbounded"). Date stays in global so the
+  update_header_date logic refreshes it on each response.
+
+  No /tests/unittest_* nodes — those are upstream-Conpot dev fixtures and a
+  known fingerprint.
+-->
+<http enabled="True" host="0.0.0.0" port="8800">
+    <global>
+        <config>
+            <entity name="protocol_version">HTTP/1.1</entity>
+            <entity name="update_header_date">true</entity>
+            <entity name="disable_method_head">false</entity>
+            <entity name="disable_method_trace">false</entity>
+            <entity name="disable_method_options">false</entity>
+            <entity name="tarpit">0</entity>
+        </config>
+
+        <headers>
+            <!-- Single global header (XSD permits one). Refreshed live when
+                 update_header_date=true. Per-node Server/X-Powered-By
+                 banners override below. -->
+            <entity name="Date">Sat, 28 Apr 1984 07:30:00 GMT</entity>
+        </headers>
+    </global>
+
+    <htdocs>
+        <node name="/">
+            <!-- 302 redirect to /index.html. Server banner is set here so
+                 even an HTTP HEAD of `/` returns the Siemens CP443-1 string. -->
+            <status>302</status>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Location">/index.html</entity>
+                <entity name="Server">Siemens CP443-1 Advanced V3.3.0</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/index.html">
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Last-Modified">Tue, 19 May 1993 09:00:00 GMT</entity>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Server">Siemens CP443-1 Advanced V3.3.0</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/index.htm">
+            <alias>/index.html</alias>
+        </node>
+    </htdocs>
+
+    <statuscodes>
+        <status name="400">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="404">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="501">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+    </statuscodes>
+</http>

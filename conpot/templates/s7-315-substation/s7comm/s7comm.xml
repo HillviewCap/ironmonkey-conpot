@@ -1,0 +1,30 @@
+<!--
+  S7Comm (ISO-TSAP) — Siemens S7-315-2 PN/DP identity.
+
+  Per conpot/protocols/s7comm/s7comm.xsd, child elements under <ssl> reference
+  databus key names — NOT literal identity strings. The databus values (set in
+  the root template.xml) are what Conpot returns in SZL 0x011C / 0x0011
+  responses to S7Comm identification probes.
+-->
+<s7comm enabled="True" host="0.0.0.0" port="10201">
+    <system_status_lists>
+        <!-- SZL 0x011C — Component Identification.
+             Probed by tools like snake.py, plcscan, nmap s7-info. -->
+        <ssl id="W#16#xy1C" name="Component Identification">
+            <system_name id="W#16#0001">SystemName</system_name>
+            <module_name id="W#16#0002">SystemDescription</module_name>
+            <plant_ident id="W#16#0003">PlantIdentifier</plant_ident>
+            <copyright id="W#16#0004">Copyright</copyright>
+            <serial id="W#16#0005">SerialNumber</serial>
+            <module_type_name id="W#16#0007">ModuleType</module_type_name>
+            <oem_id id="W#16#000A">empty</oem_id>
+            <location id="W#16#000B">empty</location>
+        </ssl>
+        <!-- SZL 0x0011 — Module Identification. -->
+        <ssl id="W#16#xy11" name="Module Identification">
+            <module_identification id="W#16#0001">Module</module_identification>
+            <hardware_identification id="W#16#0006">empty</hardware_identification>
+            <firmware_identification id="W#16#0007">Copyright</firmware_identification>
+        </ssl>
+    </system_status_lists>
+</s7comm>
