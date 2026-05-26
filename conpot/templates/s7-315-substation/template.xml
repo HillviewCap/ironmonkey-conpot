@@ -133,6 +133,21 @@
             <!-- SinglePointWithCP56Time2a (ASDU type 30) — alarms -->
             <key name="alarm_overcurrent">       <value type="value">0</value></key>
             <key name="alarm_undervoltage">      <value type="value">0</value></key>
+
+            <!-- ============================================================
+                 IEC-104 protocol parameters (read by IEC104_server.py /
+                 IEC104.py from the databus, NOT from IEC104.xml — Conpot
+                 0.6.0's IEC104.xsd doesn't allow these as XML elements).
+                 Values per IEC 60870-5-104 §12 defaults.
+                 ============================================================ -->
+            <key name="CommonAddress">  <value type="value">"0x0001"</value></key>
+            <key name="MaxFrameSize">   <value type="value">254</value></key>
+            <key name="T_0">            <value type="value">30</value></key>
+            <key name="T_1">            <value type="value">15</value></key>
+            <key name="T_2">            <value type="value">10</value></key>
+            <key name="T_3">            <value type="value">20</value></key>
+            <key name="k">              <value type="value">12</value></key>
+            <key name="w">              <value type="value">8</value></key>
         </key_value_mappings>
     </databus>
 </core>
