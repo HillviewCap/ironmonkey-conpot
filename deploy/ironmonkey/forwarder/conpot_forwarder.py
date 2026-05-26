@@ -43,6 +43,18 @@ CONPOT_LOG = os.environ.get("CONPOT_LOG", "/var/log/conpot/conpot.json")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 POST_MAX_RETRIES = int(os.environ.get("POST_MAX_RETRIES", "3"))
 POST_BACKOFF_SECONDS = float(os.environ.get("POST_BACKOFF_SECONDS", "2"))
+# Where to spool events when IronPot is unreachable after POST_MAX_RETRIES.
+# Lives on a dedicated forwarder-owned volume (`forwarder-dead-letter` ->
+# /var/spool/conpot-forwarder) so the unprivileged forwarder user can append
+# without colliding with conpot's UID on the shared log volume.
+# Empty string disables the dead-letter spool (kept for tests / local dev).
+DEAD_LETTER_PATH = os.environ.get(
+    "DEAD_LETTER_PATH", "/var/spool/conpot-forwarder/dead-letter.jsonl"
+)
+# Soft size cap. When the spool grows past this many bytes, rotate the file
+# to <path>.1 (clobbering any prior .1) and start fresh. Bounds on-disk usage
+# at 2x cap. 0 disables rotation (file grows unboundedly). Default 50 MB.
+MAX_DEAD_LETTER_BYTES = int(os.environ.get("MAX_DEAD_LETTER_BYTES", str(50 * 1024 * 1024)))
 
 # Conpot binds internally to non-privileged ports; the host exposes standard
 # OT ports via Docker port mappings. Conpot's log records local.port from the
@@ -169,8 +181,66 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _write_dead_letter(event: dict[str, Any], reason: str, detail: Any) -> None:
+    """Append a failed event to DEAD_LETTER_PATH for later replay.
+
+    Each line is a self-contained JSON object with the original event plus
+    enough metadata for an operator (or future replay tool) to understand
+    why it landed here. Best-effort: a dead-letter write failure logs but
+    never crashes the forwarder loop.
+    """
+    if not DEAD_LETTER_PATH:
+        return
+    record = {
+        "spooled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "reason": reason,
+        "detail": detail,
+        "event": event,
+    }
+    try:
+        # Create parent dir on first write — the volume is mounted at the path
+        # itself in production, so the dir already exists; this covers local tests.
+        parent = os.path.dirname(DEAD_LETTER_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        # Size-cap rotation: when the spool grows past MAX_DEAD_LETTER_BYTES,
+        # move it to <path>.1 (replacing any prior rotation) and start fresh.
+        # Caps on-disk usage at 2x the configured size.
+        if MAX_DEAD_LETTER_BYTES > 0:
+            try:
+                if os.path.getsize(DEAD_LETTER_PATH) >= MAX_DEAD_LETTER_BYTES:
+                    os.replace(DEAD_LETTER_PATH, DEAD_LETTER_PATH + ".1")
+                    log.warning(
+                        "dead_letter_rotated",
+                        path=DEAD_LETTER_PATH,
+                        cap_bytes=MAX_DEAD_LETTER_BYTES,
+                    )
+            except FileNotFoundError:
+                pass  # First write — nothing to rotate.
+        with open(DEAD_LETTER_PATH, "a") as fh:
+            fh.write(json.dumps(record) + "\n")
+        log.warning(
+            "ironpot_post_dead_lettered",
+            path=DEAD_LETTER_PATH,
+            reason=reason,
+            session_id=event.get("session_id"),
+        )
+    except OSError as exc:
+        log.error(
+            "dead_letter_write_failed",
+            error=str(exc),
+            path=DEAD_LETTER_PATH,
+            session_id=event.get("session_id"),
+        )
+
+
 def _post_event(event: dict[str, Any]) -> bool:
-    """POST with bounded linear retry. Returns True on 2xx; False if all retries exhausted."""
+    """POST with bounded linear retry. Returns True on 2xx; False if all retries exhausted.
+
+    On terminal failure (retries exhausted or non-429 4xx) the event is
+    spooled to DEAD_LETTER_PATH so a sustained IronPot outage does not
+    vaporize OT events.
+    """
     last_status: int | None = None
     last_err: str | None = None
     for attempt in range(1, POST_MAX_RETRIES + 1):
@@ -191,6 +261,11 @@ def _post_event(event: dict[str, Any]) -> bool:
                     status=resp.status_code,
                     body=resp.text[:200],
                 )
+                _write_dead_letter(
+                    event,
+                    reason="rejected_4xx",
+                    detail={"status": resp.status_code, "body": resp.text[:200]},
+                )
                 return False
         except Exception as exc:
             last_err = str(exc)
@@ -203,6 +278,11 @@ def _post_event(event: dict[str, Any]) -> bool:
         attempts=POST_MAX_RETRIES,
         last_status=last_status,
         last_error=last_err,
+    )
+    _write_dead_letter(
+        event,
+        reason="retries_exhausted",
+        detail={"attempts": POST_MAX_RETRIES, "last_status": last_status, "last_error": last_err},
     )
     return False
 

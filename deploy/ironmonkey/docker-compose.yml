@@ -62,7 +62,14 @@ services:
     # (snakeplskn test) or snakeplskn:8003 over Tailscale (VPS prod).
     network_mode: host
     volumes:
+      # Conpot writes conpot.json here as the `conpot` user; the forwarder
+      # only needs read access to tail it.
       - conpot-logs:/var/log/conpot:ro
+      # Dedicated writable volume for the dead-letter spool. Owned by
+      # `nobody:nogroup` via the forwarder image (see Dockerfile) so the
+      # unprivileged process can append failed events without colliding
+      # with conpot's UID on the shared conpot-logs volume.
+      - forwarder-dead-letter:/var/spool/conpot-forwarder
     env_file:
       - ./forwarder/.env
     depends_on:
@@ -70,3 +77,4 @@ services:
 
 volumes:
   conpot-logs:
+  forwarder-dead-letter:
