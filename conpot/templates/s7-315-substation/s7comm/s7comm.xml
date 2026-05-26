@@ -20,7 +20,16 @@
             <oem_id id="W#16#000A">empty</oem_id>
             <location id="W#16#000B">empty</location>
         </ssl>
-        <!-- SZL 0x0011 — Module Identification. -->
+        <!-- SZL 0x0011 — Module Identification.
+             id W#16#0001 → MLFB order number (Module databus key);
+             id W#16#0006 → hardware version, left empty (no leak surface);
+             id W#16#0007 → firmware version. Backed by the Copyright databus
+             key on purpose — Conpot 0.6.0 has no separate firmware-version
+             seed and we want SZL 0x0011 + SZL 0x011C to return consistent
+             "SIMATIC S7-300 V3.3" output to fingerprint probes.
+             (Upstream default/s7comm/s7comm.xml uses W#16#0006 for BOTH
+             hardware and firmware identification — that's an upstream
+             copy-paste bug, not a convention worth preserving.) -->
         <ssl id="W#16#xy11" name="Module Identification">
             <module_identification id="W#16#0001">Module</module_identification>
             <hardware_identification id="W#16#0006">empty</hardware_identification>
