@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SIMATIC WinCC Web Navigator</title>
+  <style>
+    body { background: #1a1a2e; color: #eee; font-family: Arial, sans-serif; margin: 0; }
+    .header { background: #003366; padding: 10px 20px; display: flex; align-items: center; }
+    .header h1 { color: #fff; font-size: 18px; margin: 0; }
+    .logo { color: #00aaff; font-weight: bold; font-size: 22px; margin-right: 15px; }
+    .container { max-width: 420px; margin: 80px auto; background: #252540; padding: 30px; border-radius: 4px; border-top: 3px solid #003366; }
+    h2 { color: #aac8ff; font-size: 16px; margin-top: 0; }
+    label { display: block; margin-top: 12px; font-size: 13px; color: #bbb; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 8px; margin-top: 4px; background: #1a1a2e;
+      border: 1px solid #446; color: #fff; border-radius: 3px; box-sizing: border-box;
+    }
+    input[type=submit] {
+      margin-top: 20px; width: 100%; padding: 10px; background: #003366;
+      color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 14px;
+    }
+    input[type=submit]:hover { background: #004488; }
+    .footer { margin-top: 20px; font-size: 11px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">SIEMENS</span>
+    <h1>SIMATIC WinCC Web Navigator — Substation Control System</h1>
+  </div>
+  <div class="container">
+    <h2>Operator Login</h2>
+    <form method="POST" action="/login">
+      <label for="user">Username</label>
+      <input type="text" id="user" name="username" autocomplete="off" placeholder="operator">
+      <label for="pass">Password</label>
+      <input type="password" id="pass" name="password" placeholder="••••••••">
+      <input type="submit" value="Login">
+    </form>
+    <div class="footer">SUBSTATION-01 &bull; CPU 315-2 PN/DP &bull; V3.3.14</div>
+  </div>
+</body>
+</html>

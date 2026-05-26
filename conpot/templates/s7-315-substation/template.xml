@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IronMonkey S7-315-2 PN/DP substation template (Conpot 0.6.0 directory-tree form).
+
+  Root file — per the Conpot 0.6.0 loader contract (bin/conpot:299-405), this
+  file is validated against conpot/template.xsd and used to seed the databus.
+  Per-protocol configuration lives in modbus/modbus.xml, s7comm/s7comm.xml,
+  http/http.xml, IEC104/IEC104.xml, snmp/snmp.xml — each is validated against
+  its protocol XSD.
+
+  OPSEC: zero upstream-Conpot default seed strings (vendor demo facility names,
+  upstream author copyrights, default plant identifiers). The Conpot-specific
+  `as` (Automation System) name element is intentionally absent — it has no
+  counterpart on real Siemens S7-315 SZL output and is a known fingerprint.
+  See deploy/ironmonkey/README.md "OPSEC scrub rules" for the forbidden-string
+  list (kept out of this file so `grep -r` over the template tree returns
+  clean).
+-->
+<core>
+    <template>
+        <entity name="unit">S7-315</entity>
+        <entity name="vendor">Siemens</entity>
+        <entity name="description">S7-315-2 PN/DP substation with IEC 61850 power metering</entity>
+        <entity name="protocols">HTTP, MODBUS, s7comm, IEC104</entity>
+        <entity name="creator">IronMonkey</entity>
+    </template>
+    <databus>
+        <key_value_mappings>
+            <!-- ============================================================
+                 S7 identification (returned in SZL 0x011C / 0x0011 responses)
+                 ============================================================ -->
+            <key name="SystemName">
+                <value type="value">'S7-315-CPU'</value>
+            </key>
+            <key name="SystemDescription">
+                <value type="value">'Siemens SIMATIC S7-315-2 PN/DP'</value>
+            </key>
+            <key name="PlantIdentifier">
+                <value type="value">'SUBSTATION-01'</value>
+            </key>
+            <key name="ModuleType">
+                <value type="value">'CPU 315-2 PN/DP'</value>
+            </key>
+            <key name="Module">
+                <value type="value">'6ES7 315-2EH14-0AB0'</value>
+            </key>
+            <key name="SerialNumber">
+                <value type="value">'S C-J9KB4281'</value>
+            </key>
+            <key name="Copyright">
+                <value type="value">'SIMATIC S7-300 V3.3'</value>
+            </key>
+            <key name="empty">
+                <value type="value">''</value>
+            </key>
+
+            <!-- ============================================================
+                 SNMP identity (kept lean — sysName/sysContact only; no
+                 sysLocation since substation siting is part of the OPSEC
+                 surface)
+                 ============================================================ -->
+            <key name="sysName">
+                <value type="value">'S7-315-SUBSTATION-01'</value>
+            </key>
+            <key name="sysContact">
+                <value type="value">'ops@substation-01.local'</value>
+            </key>
+            <key name="sysDescription">
+                <value type="value">'Siemens SIMATIC S7-315-2 PN/DP, IEC 61850 substation controller'</value>
+            </key>
+            <key name="sysObjectID">
+                <value type="value">'1.3.6.1.4.1.4196'</value>
+            </key>
+            <key name="sysServices">
+                <value type="value">'72'</value>
+            </key>
+            <key name="Uptime">
+                <value type="function">conpot.emulators.misc.uptime.Uptime</value>
+            </key>
+
+            <!-- ============================================================
+                 Modbus holding-register backing (IEC 61850-aligned power
+                 metering, 10x scaling per Siemens SENTRON PAC convention).
+                 ============================================================ -->
+            <key name="hr_voltage_l1">    <value type="value">2300</value></key>  <!-- 230.0 V -->
+            <key name="hr_voltage_l2">    <value type="value">2298</value></key>
+            <key name="hr_voltage_l3">    <value type="value">2301</value></key>
+            <key name="hr_current_a">     <value type="value">142</value></key>   <!-- 14.2 A -->
+            <key name="hr_frequency">     <value type="value">499</value></key>   <!-- 49.9 Hz -->
+            <key name="hr_power_factor">  <value type="value">979</value></key>   <!-- 0.979 -->
+            <key name="hr_active_power">  <value type="value">327</value></key>   <!-- 32.7 kW -->
+            <key name="hr_energy_hi">     <value type="value">0</value></key>
+            <key name="hr_energy_lo">     <value type="value">8421</value></key>
+            <key name="hr_status_word">   <value type="value">1</value></key>     <!-- 1=Running -->
+
+            <!-- List-backed databus key consumed by modbus/modbus.xml's
+                 HoldingRegisters block. Conpot 0.6.0 modbus block backing
+                 expects a single databus key whose value is a list whose
+                 length matches the block <size>. (See conpot/protocols/
+                 modbus/modbus.xsd + slave_block.py.) -->
+            <key name="hr_substation_block">
+                <value type="value">[2300, 2298, 2301, 142, 499, 979, 327, 0, 8421, 1]</value>
+            </key>
+
+            <!-- 16-coil block, all zero (substation breakers/disconnectors
+                 default to coil reads returning 0). -->
+            <key name="coil_block">
+                <value type="value">[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]</value>
+            </key>
+
+            <!-- ============================================================
+                 IEC-104 register backing (one databus key per register
+                 referenced in IEC104/IEC104.xml). Substation-flavored
+                 register names; no upstream-creator strings.
+                 ============================================================ -->
+
+            <!-- SinglePoint (ASDU type 1) — breaker/disconnector status -->
+            <key name="bus_a_breaker_closed">    <value type="value">1</value></key>
+            <key name="bus_b_breaker_closed">    <value type="value">1</value></key>
+            <key name="transformer_1_online">    <value type="value">1</value></key>
+
+            <!-- DoublePoint (ASDU type 3) — switch disconnector states
+                 (0=intermediate, 1=off, 2=on, 3=fault) -->
+            <key name="switch_disconnector_1_state">  <value type="value">2</value></key>
+            <key name="switch_disconnector_2_state">  <value type="value">2</value></key>
+
+            <!-- MeasuredValueFloatingPoint (ASDU type 13) — short-float
+                 telemetry (voltage, current, oil temperature) -->
+            <key name="voltage_bus_a">           <value type="value">230.1</value></key>
+            <key name="current_line_1">          <value type="value">14.2</value></key>
+            <key name="transformer_2_oil_temp">  <value type="value">58.4</value></key>
+
+            <!-- SinglePointWithCP56Time2a (ASDU type 30) — alarms -->
+            <key name="alarm_overcurrent">       <value type="value">0</value></key>
+            <key name="alarm_undervoltage">      <value type="value">0</value></key>
+
+            <!-- ============================================================
+                 IEC-104 protocol parameters (read by IEC104_server.py /
+                 IEC104.py from the databus, NOT from IEC104.xml — Conpot
+                 0.6.0's IEC104.xsd doesn't allow these as XML elements).
+                 Values per IEC 60870-5-104 §12 defaults.
+                 ============================================================ -->
+            <key name="CommonAddress">  <value type="value">"0x0001"</value></key>
+            <key name="MaxFrameSize">   <value type="value">254</value></key>
+            <key name="T_0">            <value type="value">30</value></key>
+            <key name="T_1">            <value type="value">15</value></key>
+            <key name="T_2">            <value type="value">10</value></key>
+            <key name="T_3">            <value type="value">20</value></key>
+            <key name="k">              <value type="value">12</value></key>
+            <key name="w">              <value type="value">8</value></key>
+        </key_value_mappings>
+    </databus>
+</core>

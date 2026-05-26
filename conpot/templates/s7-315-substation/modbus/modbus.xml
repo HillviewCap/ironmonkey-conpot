@@ -1,0 +1,51 @@
+<!--
+  Modbus/TCP — substation power-metering RTU.
+
+  Slave id=1 exposes 10 HOLDING_REGISTERS (FC-3 read) at addr 0..9 backed by
+  the `hr_substation_block` databus list key (defined in root template.xml).
+  16 COILS (FC-1 read) at addr 0..15 backed by `coil_block`.
+
+  Conpot modbus loader gotcha: the block `name` attribute IS the databus
+  key (see modbus_block_databus_mediator.py:8-15). The `<content>` child
+  exists for XSD compliance but is ignored by the loader. The block name
+  MUST match a list-typed databus key.
+
+  device_info element tags MUST be CamelCase per conpot/protocols/modbus/
+  modbus.xsd — `<vendor_name>` (lowercase) is what the monolithic 17.3
+  draft used and would fail XSD validation.
+-->
+<modbus enabled="True" host="0.0.0.0" port="5020">
+    <device_info>
+        <VendorName>Siemens AG</VendorName>
+        <ProductCode>S7-315-2EH14</ProductCode>
+        <MajorMinorRevision>V3.3.14</MajorMinorRevision>
+    </device_info>
+    <mode>serial</mode>
+    <delay>100</delay>
+    <slaves>
+        <slave id="1">
+            <blocks>
+                <!-- block name="hr_substation_block" matches the databus
+                     key in root template.xml. The mediator does
+                     databus.get_value(block_name) — block name IS the key. -->
+                <block name="hr_substation_block">
+                    <!-- 10 power-metering registers: voltage L1/L2/L3, current,
+                         frequency, power factor, active power, energy hi/lo,
+                         status word. -->
+                    <type>HOLDING_REGISTERS</type>
+                    <starting_address>0</starting_address>
+                    <size>10</size>
+                    <content>hr_substation_block</content>
+                </block>
+                <block name="coil_block">
+                    <!-- 16-coil block (substation breakers/disconnectors).
+                         All-zero default; coil writes get logged. -->
+                    <type>COILS</type>
+                    <starting_address>0</starting_address>
+                    <size>16</size>
+                    <content>coil_block</content>
+                </block>
+            </blocks>
+        </slave>
+    </slaves>
+</modbus>
