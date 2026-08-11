@@ -366,23 +366,94 @@ class TestModbusParse:
         assert parsed["count"] == 100
         assert len(parsed["written_values"]) == 64
         assert parsed["values_truncated"] is True
+        # We capped it; the PDU itself carried everything it declared.
+        assert "values_incomplete" not in parsed
+
+    def test_fc16_declaring_more_registers_than_it_carries_is_flagged(self):
+        """A byte count that cannot cover the declared quantity is a distinct fact.
+
+        `values_truncated` means WE dropped the tail at the cap. This means the
+        PDU lied -- a malformed or probing frame. Conflating the two let an
+        analyst read "count: 50, 2 values, no flag" as a complete 2-register
+        write.
+        """
+        cf = _reload_module()
+        # quantity 50, byte_count 4 -> only 2 registers actually present
+        pdu = "10" + "0010" + "0032" + "04" + "deadbeef"
+        parsed = cf._parse_modbus_request(_mbap(pdu))
+        assert parsed["count"] == 50
+        assert parsed["written_values"] == [0xDEAD, 0xBEEF]
+        assert parsed["values_incomplete"] is True
+        assert "values_truncated" not in parsed
+
+    def test_fc15_declaring_more_coils_than_it_carries_is_flagged(self):
+        """Same for coils, where the shortfall otherwise surfaces as padding bits."""
+        cf = _reload_module()
+        # quantity 100, byte_count 2 -> 16 bits available
+        pdu = "0f" + "0000" + "0064" + "02" + "cd01"
+        parsed = cf._parse_modbus_request(_mbap(pdu))
+        assert parsed["count"] == 100
+        assert len(parsed["written_values"]) == 16
+        assert parsed["values_incomplete"] is True
+
+    def test_fc23_incompleteness_is_measured_against_the_write_count(self):
+        """FC23's data block is sized by write_count, not by the read `count`."""
+        cf = _reload_module()
+        # read qty 2, write qty 4, but only 2 registers of data present
+        pdu = "17" + "0000" + "0002" + "0010" + "0004" + "04" + "000a0102"
+        parsed = cf._parse_modbus_request(_mbap(pdu))
+        assert parsed["count"] == 2          # read half, untouched
+        assert parsed["write_count"] == 4
+        assert parsed["written_values"] == [0x000A, 0x0102]
+        assert parsed["values_incomplete"] is True
+
+    def test_a_complete_write_carries_neither_flag(self):
+        """Guard against the flags becoming noise on well-formed traffic."""
+        cf = _reload_module()
+        pdu = "10" + "0010" + "0002" + "04" + "000a0102"
+        parsed = cf._parse_modbus_request(_mbap(pdu))
+        assert parsed["written_values"] == [0x000A, 0x0102]
+        assert "values_incomplete" not in parsed
+        assert "values_truncated" not in parsed
 
     @pytest.mark.parametrize(
-        "label,pdu_hex",
+        "label,fc,pdu_hex",
         [
-            ("fc3 read, count field 1 byte short", "03" + "0000" + "00"),
-            ("fc6 write, no value", "06" + "0010"),
-            ("fc22 mask, missing or_mask", "16" + "0004" + "00f2"),
-            ("fc16 byte count exceeds frame", "10" + "0010" + "0002" + "04" + "000a"),
-            ("fc15 byte count exceeds frame", "0f" + "0000" + "000a" + "02" + "cd"),
-            ("fc23 truncated before data", "17" + "0000" + "0002" + "0010" + "0001" + "02"),
-            ("fc8 single-byte sub function", "08" + "00"),
+            ("fc3 read, count field 1 byte short", 3, "03" + "0000" + "00"),
+            ("fc6 write, no value", 6, "06" + "0010"),
+            ("fc22 mask, missing or_mask", 22, "16" + "0004" + "00f2"),
+            ("fc16 byte count exceeds frame", 16, "10" + "0010" + "0002" + "04" + "000a"),
+            ("fc15 byte count exceeds frame", 15, "0f" + "0000" + "000a" + "02" + "cd"),
+            ("fc23 truncated before data", 23, "17" + "0000" + "0002" + "0010" + "0001" + "02"),
+            ("fc8 single-byte sub function", 8, "08" + "00"),
         ],
     )
-    def test_short_pdu_returns_empty_and_never_raises(self, label, pdu_hex):
-        """(h) Malformed frames are ordinary honeypot traffic: {} , not an exception."""
+    def test_short_pdu_keeps_the_function_code_and_never_raises(self, label, fc, pdu_hex):
+        """(h) A short frame degrades to the FC alone -- it must not erase the exchange.
+
+        Returning {} here is destructive rather than merely lossy: the session
+        row is still written (asset identity keeps protocol_data non-NULL), so
+        it overwrites the same session id's earlier real exchange and the
+        commands writer deletes that exchange's MITRE-labelled row. Keeping the
+        function code also keeps every OT rule firing, since they match on it
+        alone. Nothing is invented from the bytes that were not there.
+        """
         cf = _reload_module()
-        assert cf._parse_modbus_request(_mbap(pdu_hex)) == {}, label
+        assert cf._parse_modbus_request(_mbap(pdu_hex)) == {"function_code": fc}, label
+
+    def test_short_write_frame_still_carries_its_write_function_code(self):
+        """The regression that made the {}-return an evidence-wipe, pinned directly.
+
+        An FC22 missing its or_mask used to parse to {}. Appending one such
+        frame to a session in which a coil had already been forced destroyed
+        both that session's protocol_data and its ATT&CK labels, because Conpot
+        reuses one session id across TCP connections.
+        """
+        cf = _reload_module()
+        parsed = cf._parse_modbus_request(_mbap("16" + "0004" + "00f2"))
+        assert parsed["function_code"] == 22
+        assert "and_mask" not in parsed
+        assert "start_address" not in parsed
 
     def test_frame_too_short_for_a_function_code(self):
         """Below 8 bytes there is not even an FC to report."""
