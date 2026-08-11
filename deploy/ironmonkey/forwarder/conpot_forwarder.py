@@ -84,15 +84,133 @@ def _get_parent_session_id(source_ip: str) -> str | None:
         return None
 
 
-def _parse_modbus_request(raw: str | None) -> dict[str, int]:
-    """Extract FC / start / count from Conpot's stringified Modbus PDU.
+# Modbus function-code families. Bytes 10-11 of the ADU do NOT mean the same
+# thing across function codes -- a quantity for reads, the value written for
+# FC5/FC6, an AND mask for FC22 -- so one fixed layout mislabels every write.
+# Offsets below are absolute into the decoded ADU: MBAP is 7 bytes, so the
+# function code is b[7] and function-specific data starts at b[8].
+_FC_READ = frozenset({1, 2, 3, 4})
+_FC_DIAGNOSTICS = 8
+_FC_WRITE_SINGLE_COIL = 5
+_FC_WRITE_SINGLE_REGISTER = 6
+_FC_WRITE_MULTIPLE_COILS = 15
+_FC_WRITE_MULTIPLE_REGISTERS = 16
+_FC_MASK_WRITE = 22
+_FC_READ_WRITE_MULTIPLE = 23
 
-    Conpot logs `request` as a Python repr like `b'00010000000601030000000a'`
-    -- the full MBAP+PDU as hex inside a bytes literal. Layout:
-      [0..1]  txid    [2..3]  proto   [4..5]  len   [6] unit
-      [7]     fc      [8..9]  start   [10..11] count
-    Returns {} on parse failure (forwarder still POSTs without structured
-    fields rather than dropping the event).
+# A single FC16 may legally write 123 registers. `protocol_data` rides in a
+# STIX SCO, a Postgres JSONB column and an LLM prompt, so an unbounded list is
+# a cost and a storage problem in three places at once. `count` still carries
+# the true declared quantity, so only the tail of the data is lost, not scale.
+_MAX_WRITTEN_VALUES = 64
+
+# FC5 defines exactly two values: 0xFF00 on, 0x0000 off. Anything else is a
+# malformed or probing write -- keep the raw value, omit the interpretation
+# rather than inventing one.
+_COIL_ON = 0xFF00
+_COIL_OFF = 0x0000
+
+# Keys accepted from a dict-shaped `request`. Conpot 0.6.0 never emits one
+# (0 of 97 records on the lab bench, 2026-08-11) but the branch predates that
+# measurement, so it passes through known keys instead of hardcoding three --
+# hardcoding is what mislabeled FC5/FC6 writes as `count` in the first place.
+_MODBUS_DICT_KEYS = (
+    "function_code",
+    "start_address",
+    "count",
+    "written_value",
+    "written_values",
+    "values_truncated",
+    "values_incomplete",
+    "coil_state",
+    "and_mask",
+    "or_mask",
+    "sub_function",
+    "write_start_address",
+    "write_count",
+)
+
+
+class _ShortFrame(ValueError):
+    """A read was attempted past the end of the ADU.
+
+    Every branch below gates its own length, so this should be unreachable. It
+    exists so that a future off-by-one self-reports instead of silently
+    returning a plausible wrong number -- wrong OT intelligence is worse than
+    absent OT intelligence, because an analyst acts on it.
+    """
+
+
+def _u16(b: bytes, off: int) -> int:
+    """Big-endian 16-bit word at an absolute offset.
+
+    Callers validate length; this raises rather than short-reading so that a
+    missing gate surfaces as a logged parse failure instead of a wrong value.
+    """
+    if off + 2 > len(b):
+        raise _ShortFrame(f"u16 at {off} needs {off + 2} bytes, frame has {len(b)}")
+    return int.from_bytes(b[off : off + 2], "big")
+
+
+def _register_values(block: bytes, quantity: int) -> tuple[list[int], bool, bool]:
+    """Decode an FC16/FC23 data block into big-endian 16-bit registers.
+
+    Returns (values, truncated, incomplete). `incomplete` means the data block
+    did not actually carry the quantity the PDU declared -- a malformed or
+    probing frame -- which is a different fact from `truncated` (we dropped the
+    tail ourselves at the cap) and must not be conflated with it.
+    """
+    words = [
+        int.from_bytes(block[i : i + 2], "big") for i in range(0, len(block) - 1, 2)
+    ]
+    incomplete = len(words) < quantity
+    return words[:_MAX_WRITTEN_VALUES], len(words) > _MAX_WRITTEN_VALUES, incomplete
+
+
+def _coil_values(block: bytes, quantity: int) -> tuple[list[int], bool, bool]:
+    """Decode an FC15 data block into coil bits.
+
+    Bit order within each byte is LSB-first: the low bit of the first byte is
+    the first coil. Trailing bits past `quantity` are padding and are dropped.
+
+    Returns (values, truncated, incomplete) -- see `_register_values`. When the
+    declared quantity exceeds what the byte count can hold, the shortfall is
+    reported rather than the padding being passed off as coil states.
+    """
+    available = min(quantity, len(block) * 8)
+    bits = [(block[i // 8] >> (i % 8)) & 1 for i in range(available)]
+    incomplete = available < quantity
+    return bits[:_MAX_WRITTEN_VALUES], len(bits) > _MAX_WRITTEN_VALUES, incomplete
+
+
+def _parse_modbus_request(raw: str | None) -> dict[str, Any]:
+    """Interpret Conpot's stringified Modbus ADU per its function code.
+
+    Conpot 0.6.0 logs `request` as a Python repr of the full MBAP+PDU hex, e.g.
+    `b'0006000000060106001000ff'` -- FC6 writing 0x00FF to register 16, captured
+    from the lab bench on 2026-08-11. Layout:
+      [0..1] txid   [2..3] proto   [4..5] len   [6] unit
+      [7]    fc     [8...] function-specific data
+
+    Each branch validates the exact length it needs. A frame too short for its
+    layout degrades to `{"function_code": N}` -- the same degradation an
+    unrecognized function code gets -- rather than collapsing to {}. Returning
+    {} here would be actively destructive, not merely lossy: `protocol_data`
+    would carry only asset identity, which is still non-NULL, so the session
+    UPSERT overwrites the row's earlier good exchange and the commands writer
+    DELETEs its MITRE-labelled row without replacing it. Since Conpot reuses one
+    session id across TCP connections, that turns a malformed trailing frame
+    into an erase of everything the attacker did earlier in the session. Keeping
+    the function code keeps the ATT&CK rules firing, since they match on it
+    alone. (Story 17.6 code review; AC #4 amended accordingly.)
+
+    Truncated and malformed PDUs are ordinary honeypot traffic, not an
+    exceptional case, and must never raise. FC43 (Read Device Identification)
+    and vendor codes like FC90/FC100 have no start/quantity pair to read, so
+    emitting one would be fiction.
+
+    Returns {} only when the frame cannot yield even a function code, so the
+    forwarder still POSTs the event rather than dropping it (existing contract).
     """
     if not raw:
         return {}
@@ -105,20 +223,124 @@ def _parse_modbus_request(raw: str | None) -> dict[str, int]:
         b = bytes.fromhex(cleaned)
     except ValueError:
         return {}
-    if len(b) < 12:
+
+    # Through the function code is the minimum that yields anything at all.
+    if len(b) < 8:
         return {}
-    return {
-        "function_code": b[7],
-        "start_address": int.from_bytes(b[8:10], "big"),
-        "count": int.from_bytes(b[10:12], "big"),
-    }
+    fc = b[7]
+    parsed: dict[str, Any] = {"function_code": fc}
+
+    try:
+        if fc in _FC_READ:
+            if len(b) < 12:
+                return parsed
+            parsed["start_address"] = _u16(b, 8)
+            parsed["count"] = _u16(b, 10)
+            return parsed
+
+        if fc == _FC_WRITE_SINGLE_COIL:
+            if len(b) < 12:
+                return parsed
+            parsed["start_address"] = _u16(b, 8)
+            value = _u16(b, 10)
+            parsed["written_value"] = value
+            if value == _COIL_ON:
+                parsed["coil_state"] = "on"
+            elif value == _COIL_OFF:
+                parsed["coil_state"] = "off"
+            return parsed
+
+        if fc == _FC_WRITE_SINGLE_REGISTER:
+            if len(b) < 12:
+                return parsed
+            parsed["start_address"] = _u16(b, 8)
+            parsed["written_value"] = _u16(b, 10)
+            return parsed
+
+        if fc in (_FC_WRITE_MULTIPLE_COILS, _FC_WRITE_MULTIPLE_REGISTERS):
+            # [8..9] start  [10..11] quantity  [12] byte count  [13...] data
+            if len(b) < 13:
+                return parsed
+            byte_count = b[12]
+            if len(b) < 13 + byte_count:
+                return parsed
+            quantity = _u16(b, 10)
+            parsed["start_address"] = _u16(b, 8)
+            parsed["count"] = quantity
+            block = b[13 : 13 + byte_count]
+            if fc == _FC_WRITE_MULTIPLE_COILS:
+                values, truncated, incomplete = _coil_values(block, quantity)
+            else:
+                values, truncated, incomplete = _register_values(block, quantity)
+            parsed["written_values"] = values
+            if truncated:
+                parsed["values_truncated"] = True
+            if incomplete:
+                parsed["values_incomplete"] = True
+            return parsed
+
+        if fc == _FC_MASK_WRITE:
+            # [8..9] reference address  [10..11] AND mask  [12..13] OR mask
+            if len(b) < 14:
+                return parsed
+            parsed["start_address"] = _u16(b, 8)
+            parsed["and_mask"] = _u16(b, 10)
+            parsed["or_mask"] = _u16(b, 12)
+            return parsed
+
+        if fc == _FC_READ_WRITE_MULTIPLE:
+            # [8..9] read start   [10..11] read qty   [12..13] write start
+            # [14..15] write qty  [16] write byte count  [17...] data
+            if len(b) < 17:
+                return parsed
+            write_byte_count = b[16]
+            if len(b) < 17 + write_byte_count:
+                return parsed
+            parsed["start_address"] = _u16(b, 8)
+            parsed["count"] = _u16(b, 10)
+            parsed["write_start_address"] = _u16(b, 12)
+            write_count = _u16(b, 14)
+            parsed["write_count"] = write_count
+            # The write half's data block is sized by write_count, not `count`
+            # -- `count` is the read quantity and governs nothing stored here.
+            values, truncated, incomplete = _register_values(
+                b[17 : 17 + write_byte_count], write_count
+            )
+            parsed["written_values"] = values
+            if truncated:
+                parsed["values_truncated"] = True
+            if incomplete:
+                parsed["values_incomplete"] = True
+            return parsed
+
+        if fc == _FC_DIAGNOSTICS:
+            # Sub-function is a 16-bit field at [8..9], NOT a single byte:
+            # reading b[8] alone would report sub-function 4 (Force Listen Only
+            # Mode, the denial primitive the T0814 rule exists for) as 0.
+            if len(b) < 10:
+                return parsed
+            parsed["sub_function"] = _u16(b, 8)
+            return parsed
+
+        return parsed
+    except _ShortFrame as exc:
+        # Unreachable while every branch gates correctly -- see `_u16`. If it
+        # ever fires, a gate is wrong: log it loudly and degrade to the function
+        # code rather than emitting a short-read number as if it were real.
+        log.warning("modbus_parse_short_frame", function_code=fc, error=str(exc))
+        return parsed
 
 
 def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
-    # Skip connection lifecycle records -- they have no PDU and would
-    # produce empty bundles. Only forward records with an actual exchange.
+    # Skip connection lifecycle records -- they have no PDU and would produce
+    # empty bundles. Only forward records with an actual exchange.
+    #
+    # CONNECTION_TERMINATED is the third lifecycle type Conpot emits (observed
+    # on the lab bench 2026-08-11 alongside NEW_CONNECTION/CONNECTION_LOST) and
+    # was previously unfiltered, so it forwarded as a phantom exchange carrying
+    # nothing but asset_type/vendor/model.
     event_type = record.get("event_type")
-    if event_type in ("NEW_CONNECTION", "CONNECTION_LOST"):
+    if event_type in ("NEW_CONNECTION", "CONNECTION_LOST", "CONNECTION_TERMINATED"):
         return None
 
     data_type = (record.get("data_type") or "unknown").lower()
@@ -149,9 +371,9 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(request, str):
             protocol_data.update(_parse_modbus_request(request))
         elif isinstance(request, dict):
-            protocol_data["function_code"] = request.get("function_code")
-            protocol_data["start_address"] = request.get("start_address")
-            protocol_data["count"] = request.get("count")
+            for key in _MODBUS_DICT_KEYS:
+                if key in request:
+                    protocol_data[key] = request[key]
     elif data_type in ("iec104", "iec-104") and isinstance(request, dict):
         protocol_data["type_id"] = request.get("type_id")
         protocol_data["cot"] = request.get("cot")
