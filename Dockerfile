@@ -42,6 +42,11 @@ WORKDIR /home/conpot
 COPY --from=conpot-builder /usr/local/lib/python3.12/ /usr/local/lib/python3.12/
 COPY --from=conpot-builder /usr/local/bin/ /usr/local/bin/
 
+# Watchdog for gevent hub starvation. Runs as PID 1 with conpot as its child;
+# see the module docstring for why a Docker HEALTHCHECK cannot do this job.
+COPY deploy/ironmonkey/conpot_supervisor.py /usr/local/bin/conpot-supervisor
+RUN chmod +x /usr/local/bin/conpot-supervisor
+
 # Set permissions for non-root user
 RUN chown -R conpot:conpot /home/conpot
 
@@ -50,6 +55,13 @@ USER conpot
 ENV PATH=$PATH:/home/conpot/.local/bin
 ENV USER=conpot
 
-# Set the default command
-ENTRYPOINT ["conpot"]
+# Reports the supervisor's verdict. Detection and remediation both live in the
+# supervisor — this only surfaces the state to `docker ps` / `docker inspect`,
+# because Docker never restarts a container for being unhealthy.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=2 \
+    CMD test "$(cat /tmp/conpot-health 2>/dev/null)" = "ok"
+
+# Set the default command. CMD args are appended to the supervisor, which
+# execs them as `conpot <args>`, so the command contract is unchanged.
+ENTRYPOINT ["/usr/local/bin/conpot-supervisor"]
 CMD ["--template", "default", "--logfile", "/var/log/conpot/conpot.log", "-f", "--temp_dir", "/tmp"]
