@@ -84,15 +84,93 @@ def _get_parent_session_id(source_ip: str) -> str | None:
         return None
 
 
-def _parse_modbus_request(raw: str | None) -> dict[str, int]:
-    """Extract FC / start / count from Conpot's stringified Modbus PDU.
+# Modbus function-code families. Bytes 10-11 of the ADU do NOT mean the same
+# thing across function codes -- a quantity for reads, the value written for
+# FC5/FC6, an AND mask for FC22 -- so one fixed layout mislabels every write.
+# Offsets below are absolute into the decoded ADU: MBAP is 7 bytes, so the
+# function code is b[7] and function-specific data starts at b[8].
+_FC_READ = frozenset({1, 2, 3, 4})
+_FC_DIAGNOSTICS = 8
+_FC_WRITE_SINGLE_COIL = 5
+_FC_WRITE_SINGLE_REGISTER = 6
+_FC_WRITE_MULTIPLE_COILS = 15
+_FC_WRITE_MULTIPLE_REGISTERS = 16
+_FC_MASK_WRITE = 22
+_FC_READ_WRITE_MULTIPLE = 23
 
-    Conpot logs `request` as a Python repr like `b'00010000000601030000000a'`
-    -- the full MBAP+PDU as hex inside a bytes literal. Layout:
-      [0..1]  txid    [2..3]  proto   [4..5]  len   [6] unit
-      [7]     fc      [8..9]  start   [10..11] count
-    Returns {} on parse failure (forwarder still POSTs without structured
-    fields rather than dropping the event).
+# A single FC16 may legally write 123 registers. `protocol_data` rides in a
+# STIX SCO, a Postgres JSONB column and an LLM prompt, so an unbounded list is
+# a cost and a storage problem in three places at once. `count` still carries
+# the true declared quantity, so only the tail of the data is lost, not scale.
+_MAX_WRITTEN_VALUES = 64
+
+# FC5 defines exactly two values: 0xFF00 on, 0x0000 off. Anything else is a
+# malformed or probing write -- keep the raw value, omit the interpretation
+# rather than inventing one.
+_COIL_ON = 0xFF00
+_COIL_OFF = 0x0000
+
+# Keys accepted from a dict-shaped `request`. Conpot 0.6.0 never emits one
+# (0 of 97 records on the lab bench, 2026-08-11) but the branch predates that
+# measurement, so it passes through known keys instead of hardcoding three --
+# hardcoding is what mislabeled FC5/FC6 writes as `count` in the first place.
+_MODBUS_DICT_KEYS = (
+    "function_code",
+    "start_address",
+    "count",
+    "written_value",
+    "written_values",
+    "coil_state",
+    "and_mask",
+    "or_mask",
+    "sub_function",
+    "write_start_address",
+    "write_count",
+)
+
+
+def _u16(b: bytes, off: int) -> int:
+    """Big-endian 16-bit word at an absolute offset. Caller validates length."""
+    return int.from_bytes(b[off : off + 2], "big")
+
+
+def _register_values(block: bytes) -> tuple[list[int], bool]:
+    """Decode an FC16/FC23 data block into big-endian 16-bit registers."""
+    words = [
+        int.from_bytes(block[i : i + 2], "big") for i in range(0, len(block) - 1, 2)
+    ]
+    return words[:_MAX_WRITTEN_VALUES], len(words) > _MAX_WRITTEN_VALUES
+
+
+def _coil_values(block: bytes, quantity: int) -> tuple[list[int], bool]:
+    """Decode an FC15 data block into coil bits.
+
+    Bit order within each byte is LSB-first: the low bit of the first byte is
+    the first coil. Trailing bits past `quantity` are padding and are dropped.
+    """
+    available = min(quantity, len(block) * 8)
+    bits = [(block[i // 8] >> (i % 8)) & 1 for i in range(available)]
+    return bits[:_MAX_WRITTEN_VALUES], len(bits) > _MAX_WRITTEN_VALUES
+
+
+def _parse_modbus_request(raw: str | None) -> dict[str, Any]:
+    """Interpret Conpot's stringified Modbus ADU per its function code.
+
+    Conpot 0.6.0 logs `request` as a Python repr of the full MBAP+PDU hex, e.g.
+    `b'0006000000060106001000ff'` -- FC6 writing 0x00FF to register 16, captured
+    from the lab bench on 2026-08-11. Layout:
+      [0..1] txid   [2..3] proto   [4..5] len   [6] unit
+      [7]    fc     [8...] function-specific data
+
+    Each branch validates the exact length it needs and returns {} when the
+    frame is short: truncated and malformed PDUs are ordinary honeypot traffic,
+    not an exceptional case, and must never raise. An unrecognized function
+    code degrades to `{"function_code": N}` rather than guessing a layout --
+    FC43 (Read Device Identification) and vendor codes like FC90/FC100 have no
+    start/quantity pair to read, so emitting one would be fiction.
+
+    Returns {} on any parse failure, so the forwarder still POSTs the event
+    without structured fields rather than dropping it (existing contract).
     """
     if not raw:
         return {}
@@ -105,20 +183,108 @@ def _parse_modbus_request(raw: str | None) -> dict[str, int]:
         b = bytes.fromhex(cleaned)
     except ValueError:
         return {}
-    if len(b) < 12:
+
+    # Through the function code is the minimum that yields anything at all.
+    if len(b) < 8:
         return {}
-    return {
-        "function_code": b[7],
-        "start_address": int.from_bytes(b[8:10], "big"),
-        "count": int.from_bytes(b[10:12], "big"),
-    }
+    fc = b[7]
+    parsed: dict[str, Any] = {"function_code": fc}
+
+    if fc in _FC_READ:
+        if len(b) < 12:
+            return {}
+        parsed["start_address"] = _u16(b, 8)
+        parsed["count"] = _u16(b, 10)
+        return parsed
+
+    if fc == _FC_WRITE_SINGLE_COIL:
+        if len(b) < 12:
+            return {}
+        parsed["start_address"] = _u16(b, 8)
+        value = _u16(b, 10)
+        parsed["written_value"] = value
+        if value == _COIL_ON:
+            parsed["coil_state"] = "on"
+        elif value == _COIL_OFF:
+            parsed["coil_state"] = "off"
+        return parsed
+
+    if fc == _FC_WRITE_SINGLE_REGISTER:
+        if len(b) < 12:
+            return {}
+        parsed["start_address"] = _u16(b, 8)
+        parsed["written_value"] = _u16(b, 10)
+        return parsed
+
+    if fc in (_FC_WRITE_MULTIPLE_COILS, _FC_WRITE_MULTIPLE_REGISTERS):
+        # [8..9] start  [10..11] quantity  [12] byte count  [13...] data
+        if len(b) < 13:
+            return {}
+        byte_count = b[12]
+        if len(b) < 13 + byte_count:
+            return {}
+        quantity = _u16(b, 10)
+        parsed["start_address"] = _u16(b, 8)
+        parsed["count"] = quantity
+        block = b[13 : 13 + byte_count]
+        if fc == _FC_WRITE_MULTIPLE_COILS:
+            values, truncated = _coil_values(block, quantity)
+        else:
+            values, truncated = _register_values(block)
+        parsed["written_values"] = values
+        if truncated:
+            parsed["values_truncated"] = True
+        return parsed
+
+    if fc == _FC_MASK_WRITE:
+        # [8..9] reference address  [10..11] AND mask  [12..13] OR mask
+        if len(b) < 14:
+            return {}
+        parsed["start_address"] = _u16(b, 8)
+        parsed["and_mask"] = _u16(b, 10)
+        parsed["or_mask"] = _u16(b, 12)
+        return parsed
+
+    if fc == _FC_READ_WRITE_MULTIPLE:
+        # [8..9] read start   [10..11] read qty   [12..13] write start
+        # [14..15] write qty  [16] write byte count  [17...] data
+        if len(b) < 17:
+            return {}
+        write_byte_count = b[16]
+        if len(b) < 17 + write_byte_count:
+            return {}
+        parsed["start_address"] = _u16(b, 8)
+        parsed["count"] = _u16(b, 10)
+        parsed["write_start_address"] = _u16(b, 12)
+        parsed["write_count"] = _u16(b, 14)
+        values, truncated = _register_values(b[17 : 17 + write_byte_count])
+        parsed["written_values"] = values
+        if truncated:
+            parsed["values_truncated"] = True
+        return parsed
+
+    if fc == _FC_DIAGNOSTICS:
+        # Sub-function is a 16-bit field at [8..9], NOT a single byte: reading
+        # b[8] alone would report sub-function 4 (Force Listen Only Mode, the
+        # denial primitive the T0814 rule exists for) as 0.
+        if len(b) < 10:
+            return {}
+        parsed["sub_function"] = _u16(b, 8)
+        return parsed
+
+    return parsed
 
 
 def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
-    # Skip connection lifecycle records -- they have no PDU and would
-    # produce empty bundles. Only forward records with an actual exchange.
+    # Skip connection lifecycle records -- they have no PDU and would produce
+    # empty bundles. Only forward records with an actual exchange.
+    #
+    # CONNECTION_TERMINATED is the third lifecycle type Conpot emits (observed
+    # on the lab bench 2026-08-11 alongside NEW_CONNECTION/CONNECTION_LOST) and
+    # was previously unfiltered, so it forwarded as a phantom exchange carrying
+    # nothing but asset_type/vendor/model.
     event_type = record.get("event_type")
-    if event_type in ("NEW_CONNECTION", "CONNECTION_LOST"):
+    if event_type in ("NEW_CONNECTION", "CONNECTION_LOST", "CONNECTION_TERMINATED"):
         return None
 
     data_type = (record.get("data_type") or "unknown").lower()
@@ -149,9 +315,9 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(request, str):
             protocol_data.update(_parse_modbus_request(request))
         elif isinstance(request, dict):
-            protocol_data["function_code"] = request.get("function_code")
-            protocol_data["start_address"] = request.get("start_address")
-            protocol_data["count"] = request.get("count")
+            for key in _MODBUS_DICT_KEYS:
+                if key in request:
+                    protocol_data[key] = request[key]
     elif data_type in ("iec104", "iec-104") and isinstance(request, dict):
         protocol_data["type_id"] = request.get("type_id")
         protocol_data["cot"] = request.get("cot")
