@@ -70,7 +70,23 @@ class IEC104Server(object):
                             break
                         while request and len(request) < 2:
                             new_byte = sock.recv(1)
+                            if not new_byte:
+                                # Peer closed after sending a partial header.
+                                # Without this guard recv() returns b'' on every
+                                # iteration, `request` never grows, and the loop
+                                # spins at 100% CPU. Because an EOF recv never
+                                # blocks it also never yields to the gevent hub,
+                                # so the T_3 timeout below can never fire and
+                                # every other Conpot protocol is starved out.
+                                break
                             request += new_byte
+
+                        if len(request) < 2:
+                            # Truncated header — nothing to unpack.
+                            logger.info("IEC104 Station disconnected. (%s)", session.id)
+                            session.add_event({"type": "CONNECTION_LOST"})
+                            iec104_handler.disconnect()
+                            break
 
                         _, length = struct.unpack(">BB", request[:2])
                         while len(request) < (length + 2):

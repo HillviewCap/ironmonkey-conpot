@@ -61,6 +61,36 @@ class TestIEC104Server(unittest.TestCase):
         data = s.recv(6)
         self.assertEqual(data, frames.TESTFR_con.build())
 
+    def test_partial_header_then_close_does_not_wedge_server(self):
+        """
+        Objective: A peer that sends a partial header and disconnects must not
+        starve the gevent hub.
+
+        Regression test for the unguarded `while request and len(request) < 2`
+        recv loop. At EOF recv() returns b'' immediately, so `request` never
+        grew and the loop spun at 100% CPU. Because an EOF recv never blocks it
+        also never yielded to the hub, so the T_3 timeout could not fire and
+        every other Conpot protocol (Modbus, S7comm, HTTP) stopped accepting.
+        Observed in production 2026-08-07: one probe took the OT sensor dark
+        for three days.
+        """
+        half_open = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        half_open.settimeout(1)
+        half_open.connect(("127.0.0.1", 2404))
+        half_open.send(b"\x68")  # one byte of a two-byte header, then EOF
+        half_open.close()
+
+        # Give the handler greenlet room to spin if the guard ever regresses.
+        time.sleep(0.2)
+
+        # The hub must still be scheduling: a fresh session gets served.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(("127.0.0.1", 2404))
+        s.send(frames.STARTDT_act.build())
+        self.assertSequenceEqual(s.recv(6), frames.STARTDT_con.build())
+        s.close()
+
     def test_write_for_non_existing(self):
         """
         Objective: Test answer for a command to a device that doesn't exist
