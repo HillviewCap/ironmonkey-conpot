@@ -8,6 +8,7 @@ later. A sustained IronPot outage should never silently vaporize OT events.
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import httpx
@@ -538,3 +539,117 @@ class TestMapRecordLifecycle:
         assert mapped is not None
         assert mapped["protocol_data"]["written_value"] == 255
         assert "count" not in mapped["protocol_data"]
+
+
+class TestObservationTimestamp:
+    """Story 18.16 — the forwarder stamps its own per-record observation time.
+
+    Before this, `_map_record` copied `record["timestamp"]`, which Conpot sets
+    ONCE per AttackSession and stamps on every event in it. `_exchange_key`
+    hashes (exchange_ts, service, protocol_data), so with no time entropy it
+    collapsed to sha1(protocol_data) and repeated identical PDUs became one row.
+    """
+
+    _REC = {
+        "event_type": None,
+        "data_type": "modbus",
+        "src_ip": "203.0.113.9",
+        "dst_port": 5020,
+        "request": {"function_code": 3, "start_address": 4, "count": 1},
+        "id": "sess-obs",
+        "timestamp": "2026-08-11T14:51:01.724936",
+    }
+
+    def test_same_record_twice_yields_two_distinct_stamps(self):
+        """AC #1 — this is the whole story: identical input, distinct stamps."""
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            first = cf._map_record(dict(self._REC))
+            second = cf._map_record(dict(self._REC))
+
+        assert first["timestamp"] != second["timestamp"]
+        # and neither is the Conpot session-open time it used to copy
+        assert first["timestamp"] != self._REC["timestamp"]
+        assert second["timestamp"] != self._REC["timestamp"]
+
+    def test_stamp_is_strictly_monotonic_under_a_frozen_clock(self):
+        """AC #2 — a coarse clock or an NTP step back must not re-collide keys.
+
+        HARNESS TRAP: `_reload_module` ends in `importlib.reload`, which resets
+        the module-level last-emitted value. Reload ONCE, then map three records
+        against that same module object — calling the helper between maps makes
+        this pass for the wrong reason.
+        """
+        cf = _reload_module()
+        frozen = datetime(2026, 8, 12, 13, 21, 42, 317029, tzinfo=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        with patch.object(cf, "datetime", _FrozenDatetime):
+            stamps = [cf._observation_ts() for _ in range(3)]
+
+        assert stamps == sorted(stamps), "stamps must be strictly increasing"
+        assert len(set(stamps)) == 3
+        parsed = [datetime.fromisoformat(s) for s in stamps]
+        assert parsed[1] - parsed[0] == timedelta(microseconds=1)
+        assert parsed[2] - parsed[1] == timedelta(microseconds=1)
+
+    def test_stamp_always_carries_microseconds(self):
+        """AC #1 — bare .isoformat() drops the subsecond part on a whole second,
+        which would vary the shape of a hash input and a STIX field."""
+        cf = _reload_module()
+        whole_second = datetime(2026, 8, 12, 13, 21, 42, 0, tzinfo=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return whole_second
+
+        with patch.object(cf, "datetime", _FrozenDatetime):
+            stamp = cf._observation_ts()
+
+        assert stamp == "2026-08-12T13:21:42.000000+00:00"
+
+    def test_retries_reuse_the_same_baked_stamp(self, tmp_path):
+        """AC #3 — the stamp is computed once in `_map_record`, never re-derived.
+
+        If a retry re-read the clock the exchange_key would differ and the
+        ON CONFLICT (session_id, exchange_key) DO NOTHING guard would not fire,
+        so every IronPot hiccup would duplicate a row.
+
+        HARNESS TRAP: `_reload_module` pins POST_MAX_RETRIES="2", so there are
+        two attempts, not three. Assert on two bodies.
+        """
+        cf = _reload_module(dead_letter_path=str(tmp_path / "dl.jsonl"))
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(dict(self._REC))
+
+        bodies: list[dict] = []
+
+        def _capture(*_a, **kw):
+            bodies.append(json.loads(json.dumps(kw["json"])))
+            raise httpx.ConnectError("ironpot down")
+
+        with patch.object(cf.httpx, "post", side_effect=_capture):
+            cf._post_event(mapped)
+
+        assert len(bodies) == 2, "harness pins POST_MAX_RETRIES=2"
+        assert bodies[0]["timestamp"] == bodies[1]["timestamp"] == mapped["timestamp"]
+
+    def test_payload_key_set_is_unchanged(self):
+        """AC #4 — no new key. A new forwarder key must clear two independent
+        allow-lists upstream and each drops an unknown key SILENTLY."""
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(dict(self._REC))
+
+        assert sorted(mapped.keys()) == sorted([
+            "timestamp", "sensor_id", "source_ip", "source_country", "source_asn",
+            "dst_port", "service", "session_id", "username", "password",
+            "source_type", "protocol_data", "parent_session_id",
+        ])
+        # never inside protocol_data -- it is an _exchange_key input
+        assert not any("time" in k or "ts" in k for k in mapped["protocol_data"])
