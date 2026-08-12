@@ -20,7 +20,9 @@ Resilience:
 import json
 import os
 import sys
+import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -331,6 +333,38 @@ def _parse_modbus_request(raw: str | None) -> dict[str, Any]:
         return parsed
 
 
+# Story 18.16 -- per-exchange observation time.
+#
+# `_exchange_key` upstream hashes (exchange_ts, service, protocol_data). Conpot
+# gives us no usable time entropy (see the comment at the `timestamp` key in
+# `_map_record`), so the forwarder supplies it: one clock read per mapped
+# record, at map time.
+#
+# Monotonic by construction. A coarse clock, two records inside the same
+# microsecond, or an NTP step backwards would otherwise re-collide the key --
+# reintroducing exactly the bug this story removes, but intermittently, which is
+# worse. Mirrors Conpot's own tiebreak in attack_session.py
+# (`while elapse_ms in self.data: elapse_ms += 1`).
+_ts_lock = threading.Lock()
+_last_observation_ts: datetime | None = None
+
+
+def _observation_ts() -> str:
+    """Return a strictly-increasing UTC ISO-8601 stamp with microseconds.
+
+    `timespec="microseconds"` is explicit on purpose: bare `.isoformat()` omits
+    the subsecond part when `microsecond == 0`, so roughly one record per million
+    would carry a differently-shaped string into a hash input and a STIX field.
+    """
+    global _last_observation_ts
+    with _ts_lock:
+        now = datetime.now(timezone.utc)
+        if _last_observation_ts is not None and now <= _last_observation_ts:
+            now = _last_observation_ts + timedelta(microseconds=1)
+        _last_observation_ts = now
+    return now.isoformat(timespec="microseconds")
+
+
 def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
     # Skip connection lifecycle records -- they have no PDU and would produce
     # empty bundles. Only forward records with an actual exchange.
@@ -387,7 +421,16 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
     parent_session_id = _get_parent_session_id(source_ip)
 
     return {
-        "timestamp": record.get("timestamp", ""),
+        # Story 18.16: the forwarder's OWN clock at map time, never
+        # record["timestamp"]. Conpot's AttackSession.__init__ sets
+        # self.timestamp ONCE and _dump_data stamps that same value on every
+        # logged event, while one session spans every TCP connection from a
+        # (protocol, source IP) pair -- so record["timestamp"] carries zero
+        # entropy across a session and `_exchange_key` collapsed to
+        # sha1(protocol_data). Repeated identical PDUs became one row: a
+        # read/write/read probe stored TWO rows, not three, so a blind write was
+        # indistinguishable from a verified-successful manipulation.
+        "timestamp": _observation_ts(),
         "sensor_id": SENSOR_ID,
         "source_ip": source_ip,
         "source_country": None,
