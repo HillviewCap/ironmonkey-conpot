@@ -25,10 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 class IEC104(object):
-    def __init__(self, device_data_controller, sock, address, session_id):
+    def __init__(self, device_data_controller, sock, address, session_id, session=None):
         self.sock = sock
         self.address = address
         self.session_id = session_id
+        # Story: OT-IEC104 capture. `session_id` above is a bare string; this
+        # is the actual AttackSession object IEC104Server.handle() already
+        # holds, needed here so handle_i_frame can log the ASDU it parses.
+        # Before this, i_frame handling never called add_event() with
+        # anything but NEW_CONNECTION/CONNECTION_LOST -- every touch to the
+        # IEC-104 bait port vanished before reaching the forwarder, which has
+        # had a branch expecting {"type_id", "cot", "ioa"} since it was
+        # written, with nothing upstream ever populating it.
+        self.session = session
         self.T_1 = conpot_core.get_databus().get_value("T_1")
         self.timeout_t1 = gevent.Timeout(self.T_1, gevent.Timeout)
         self.T_2 = conpot_core.get_databus().get_value("T_2")
@@ -186,6 +195,32 @@ class IEC104(object):
         except InvalidFieldValueException as ex:
             logger.warning("InvalidFieldValue: %s. (%s)", ex, self.session_id)
 
+    def _record_asdu_event(self, container, type_id):
+        """Log the ASDU's type/cot/ioa so the session carries real protocol
+        detail instead of only NEW_CONNECTION/CONNECTION_LOST.
+
+        Wrapped under a "request" key to match the shape the Conpot forwarder
+        already expects (`elif data_type in ("iec104", "iec-104") and
+        isinstance(request, dict): protocol_data["type_id"] = request.get(...)`),
+        mirroring how modbus/s7comm/http wrap their own captured request.
+
+        An unrecognized type_id has no bound info-object class in frames.py's
+        guess_payload_class, so `getfieldval("COT"/"IOA")` can raise
+        AttributeError -- ordinary probing traffic (a bogus or unsupported
+        type_id), not a fault, so it degrades to whatever was extracted
+        rather than dropping the event.
+        """
+        request = {"type_id": type_id}
+        try:
+            request["cot"] = container.getfieldval("COT")
+        except AttributeError:
+            pass
+        try:
+            request["ioa"] = container.getfieldval("IOA")
+        except AttributeError:
+            pass
+        self.session.add_event({"request": request})
+
     # === i_frame
     def handle_i_frame(self, frame):
         container = i_frame(frame)
@@ -247,6 +282,9 @@ class IEC104(object):
         common_address = self.device_data_controller.common_address
         type_id = container.getfieldval("TypeID")
         request_coa = container.getfieldval("COA")
+
+        if self.session is not None:
+            self._record_asdu_event(container, type_id)
 
         # 45: Single command
         if type_id == TypeIdentification["C_SC_NA_1"] and request_coa == common_address:

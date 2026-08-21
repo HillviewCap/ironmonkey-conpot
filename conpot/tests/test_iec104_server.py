@@ -234,6 +234,57 @@ class TestIEC104Server(unittest.TestCase):
         )
         self.assertSequenceEqual(data, act_conf.build())
 
+    def test_i_frame_logs_asdu_event(self):
+        """OT-IEC104 capture.
+
+        Before this, handle_i_frame never called add_event() with anything
+        but NEW_CONNECTION/CONNECTION_LOST -- every touch to the exposed
+        IEC-104 bait port vanished before reaching the forwarder, which has
+        had a branch expecting {"type_id", "cot", "ioa"} since it was
+        written, with nothing upstream ever populating it. Reuses the exact
+        write-command fixture from test_write_no_relation_for_existing (a
+        proven-working request/response pair) and additionally asserts on
+        the session event queue.
+
+        Searches the next few queue items rather than asserting the ASDU
+        event is the very first one: lifecycle events (NEW_CONNECTION) and
+        this event share one queue, and this test only cares that the ASDU
+        got logged at all, not its exact position relative to them.
+        """
+        log_queue = conpot_core.get_sessionManager().log_queue
+        while not log_queue.empty():  # drop anything left over from a prior test
+            log_queue.get_nowait()
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(("127.0.0.1", 2404))
+
+        s.send(frames.STARTDT_act.build())
+        s.recv(6)
+
+        self.databus.set_value("22_19", 0)  # Must be in template and no relation
+
+        single_command = (
+            frames.i_frame()
+            / frames.asdu_head(COA=self.coa, COT=6)
+            / frames.asdu_infobj_45(IOA=0x131600, SCS=0)
+        )
+        s.send(single_command.build())
+        s.recv(16)  # ACT_CONF -- proven by test_write_no_relation_for_existing
+
+        request = None
+        for _ in range(5):
+            data = log_queue.get(timeout=2)["data"]
+            if "request" in data:
+                request = data["request"]
+                break
+        self.assertIsNotNone(request, "no ASDU event reached the session log_queue")
+        self.assertEqual(45, request["type_id"])  # C_SC_NA_1, single command
+        self.assertEqual(6, request["cot"])  # activation
+        self.assertEqual(0x131600, request["ioa"])
+
+        s.close()
+
     @patch("conpot.protocols.IEC104.IEC104_server.gevent._socket3.socket.recv")
     def test_failing_connection_connection_lost_event(self, mock_timeout):
         """

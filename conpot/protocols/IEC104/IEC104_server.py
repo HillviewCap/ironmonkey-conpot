@@ -53,7 +53,9 @@ class IEC104Server(object):
             session.id,
         )
         session.add_event({"type": "NEW_CONNECTION"})
-        iec104_handler = IEC104(self.device_data_controller, sock, address, session.id)
+        iec104_handler = IEC104(
+            self.device_data_controller, sock, address, session.id, session=session
+        )
         try:
             while True:
                 timeout_t3 = gevent.Timeout(
