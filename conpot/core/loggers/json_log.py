@@ -43,6 +43,7 @@ class JsonLogger(object):
             "data_type": event["data_type"],
             "request": event["data"].get("request"),
             "response": event["data"].get("response"),
+            "method": event["data"].get("method"),
             "event_type": event["data"].get("type"),
         }
 

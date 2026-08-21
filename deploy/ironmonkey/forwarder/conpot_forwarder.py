@@ -17,6 +17,7 @@ Resilience:
   - structlog JSON output so the container logs are grep-able
 """
 
+import ast
 import json
 import os
 import sys
@@ -333,6 +334,104 @@ def _parse_modbus_request(raw: str | None) -> dict[str, Any]:
         return parsed
 
 
+# `protocol_data` rides in a STIX SCO, a Postgres JSONB column and an LLM
+# prompt, same reasoning as `_MAX_WRITTEN_VALUES` above -- attacker-supplied
+# text (a path, a header, a POST body) is unbounded and has to be capped
+# before it enters any of the three.
+_MAX_HTTP_TEXT_CHARS = 512
+
+# Header names worth pulling out as their own field. Case-insensitive lookup
+# against Conpot's `self.headers._headers` -- keyed here in lowercase, the
+# canonical form `_parse_http_request` compares against.
+_HTTP_HEADER_FIELDS: dict[str, str] = {
+    "user-agent": "http_user_agent",
+    "host": "http_host",
+    "referer": "http_referer",
+    # Conpot's HTTP template implements no auth challenge, but a
+    # credential-stuffing tool may send Basic auth unprompted anyway -- the
+    # same signal SSH/Telnet capture as `username`/`password`, just carried
+    # in a header instead of a login prompt.
+    "authorization": "http_authorization",
+}
+
+
+def _cap_text(value: str, field_name: str, parsed: dict[str, Any]) -> str:
+    """Cap `value` at `_MAX_HTTP_TEXT_CHARS`, flagging `<field_name>_truncated`.
+
+    Mirrors the `values_truncated` convention from the Modbus write-list cap:
+    the cap is our doing, so it is reported as its own fact rather than
+    silently shortening the string.
+    """
+    if len(value) > _MAX_HTTP_TEXT_CHARS:
+        parsed[f"{field_name}_truncated"] = True
+        return value[:_MAX_HTTP_TEXT_CHARS]
+    return value
+
+
+def _parse_http_request(raw: str | None, response: Any) -> dict[str, Any]:
+    """Interpret Conpot's stringified HTTP request tuple.
+
+    Conpot's `HTTPServer.log()` calls `session.add_event({"request":
+    str((self.path, self.headers._headers, body)), ...})` -- `request` on
+    disk is therefore a Python `repr()` of a 3-tuple, e.g.:
+
+        ('/index.html', [('Host', '10.0.0.5:8800'), ('User-Agent', 'curl/7.68.0')], None)
+
+    `ast.literal_eval` parses exactly the literal grammar `repr()` emits
+    (str/bytes/list/tuple/None) without evaluating attacker-controlled
+    content as code the way `eval()` would. Malformed or truncated input
+    degrades to `{}` (or a partial dict) rather than raising -- same
+    degrade-gracefully contract as `_parse_modbus_request` -- so one bad
+    record never drops the whole event.
+    """
+    parsed: dict[str, Any] = {}
+    if response is not None:
+        try:
+            parsed["http_status"] = int(response)
+        except (TypeError, ValueError):
+            pass
+
+    if not raw:
+        return parsed
+    try:
+        decoded = ast.literal_eval(raw)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return parsed
+    if not isinstance(decoded, tuple) or len(decoded) != 3:
+        return parsed
+    path, headers, body = decoded
+
+    if isinstance(path, str):
+        request_path, _, query = path.partition("?")
+        parsed["http_path"] = _cap_text(request_path or "/", "http_path", parsed)
+        if query:
+            parsed["http_query"] = _cap_text(query, "http_query", parsed)
+
+    if isinstance(headers, list):
+        for item in headers:
+            if not (isinstance(item, (list, tuple)) and len(item) == 2):
+                continue
+            name, value = item
+            if not (isinstance(name, str) and isinstance(value, str)):
+                continue
+            field_name = _HTTP_HEADER_FIELDS.get(name.lower())
+            # First occurrence wins -- a client sending the same header twice
+            # should not let the second value silently overwrite the first.
+            if field_name and field_name not in parsed:
+                parsed[field_name] = _cap_text(value, field_name, parsed)
+
+    if isinstance(body, (bytes, bytearray)) and body:
+        parsed["http_body"] = _cap_text(
+            body.decode("utf-8", errors="replace"), "http_body", parsed
+        )
+        parsed["http_body_length"] = len(body)
+    elif isinstance(body, str) and body:
+        parsed["http_body"] = _cap_text(body, "http_body", parsed)
+        parsed["http_body_length"] = len(body)
+
+    return parsed
+
+
 # Story 18.16 -- per-exchange observation time.
 #
 # `_exchange_key` upstream hashes (exchange_ts, service, protocol_data). Conpot
@@ -414,6 +513,12 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
         protocol_data["ioa"] = request.get("ioa")
     elif data_type == "s7comm" and isinstance(request, dict):
         protocol_data["s7_function"] = request.get("function")
+    elif data_type == "http":
+        method = record.get("method")
+        if isinstance(method, str) and method:
+            protocol_data["http_method"] = method
+        if isinstance(request, str):
+            protocol_data.update(_parse_http_request(request, record.get("response")))
 
     # Drop None values to keep the payload compact.
     protocol_data = {k: v for k, v in protocol_data.items() if v is not None}

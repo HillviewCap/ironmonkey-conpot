@@ -484,6 +484,79 @@ class TestModbusParse:
         }
 
 
+class TestHttpParse:
+    """`_parse_http_request` — the stringified (path, headers, body) tuple."""
+
+    REQUEST_INDEX_HTML = (
+        "('/index.html', [('Host', '10.0.0.5:8800'), "
+        "('User-Agent', 'curl/7.68.0'), ('Accept', '*/*')], None)"
+    )
+    REQUEST_WITH_QUERY_AND_BODY = (
+        "('/index.html?debug=1', [('Host', '10.0.0.5:8800'), "
+        "('User-Agent', 'python-requests/2.31.0'), "
+        "('Authorization', 'Basic YWRtaW46YWRtaW4=')], b'user=admin&pass=admin')"
+    )
+
+    def test_known_page_hit(self):
+        cf = _reload_module()
+        parsed = cf._parse_http_request(self.REQUEST_INDEX_HTML, 200)
+        assert parsed == {
+            "http_status": 200,
+            "http_path": "/index.html",
+            "http_host": "10.0.0.5:8800",
+            "http_user_agent": "curl/7.68.0",
+        }
+
+    def test_query_string_and_body_and_auth_header_captured(self):
+        cf = _reload_module()
+        parsed = cf._parse_http_request(self.REQUEST_WITH_QUERY_AND_BODY, "404")
+        assert parsed["http_status"] == 404
+        assert parsed["http_path"] == "/index.html"
+        assert parsed["http_query"] == "debug=1"
+        assert parsed["http_user_agent"] == "python-requests/2.31.0"
+        assert parsed["http_authorization"] == "Basic YWRtaW46YWRtaW4="
+        assert parsed["http_body"] == "user=admin&pass=admin"
+        assert parsed["http_body_length"] == len(b"user=admin&pass=admin")
+
+    def test_path_with_no_query_omits_query_key(self):
+        cf = _reload_module()
+        parsed = cf._parse_http_request(self.REQUEST_INDEX_HTML, 200)
+        assert "http_query" not in parsed
+
+    def test_response_only_status_still_int_coerced(self):
+        """`response` is logged as a stringified status, e.g. \"200\"."""
+        cf = _reload_module()
+        parsed = cf._parse_http_request(None, "503")
+        assert parsed == {"http_status": 503}
+
+    @pytest.mark.parametrize(
+        "raw", [None, "", "not-a-tuple-at-all", "('/x',", "(1, 2)"]
+    )
+    def test_unparseable_request_degrades_to_status_only(self, raw):
+        """Same degrade-gracefully contract as `_parse_modbus_request`."""
+        cf = _reload_module()
+        parsed = cf._parse_http_request(raw, 200)
+        assert parsed == {"http_status": 200}
+
+    def test_long_body_is_capped_and_flagged(self):
+        cf = _reload_module()
+        long_body = "A" * (cf._MAX_HTTP_TEXT_CHARS + 50)
+        raw = f"('/index.html', [], b'{long_body}')"
+        parsed = cf._parse_http_request(raw, 200)
+        assert len(parsed["http_body"]) == cf._MAX_HTTP_TEXT_CHARS
+        assert parsed["http_body_truncated"] is True
+        assert parsed["http_body_length"] == len(long_body)
+
+    def test_repeated_header_first_occurrence_wins(self):
+        cf = _reload_module()
+        raw = (
+            "('/index.html', [('User-Agent', 'first'), "
+            "('User-Agent', 'second')], None)"
+        )
+        parsed = cf._parse_http_request(raw, 200)
+        assert parsed["http_user_agent"] == "first"
+
+
 class TestMapRecordLifecycle:
     """Lifecycle filtering and the dict-shaped-request fallback in _map_record."""
 
@@ -539,6 +612,55 @@ class TestMapRecordLifecycle:
         assert mapped is not None
         assert mapped["protocol_data"]["written_value"] == 255
         assert "count" not in mapped["protocol_data"]
+
+    def test_http_request_reaches_protocol_data(self):
+        """The bug this closes: HTTP had no branch at all, so every OT-HTTP
+        touch collapsed to the 3 default asset keys and nothing else."""
+        cf = _reload_module()
+        request = (
+            "('/index.html', [('Host', '10.0.0.5:8800'), "
+            "('User-Agent', 'Mozilla/5.0 (Nmap Scripting Engine)')], None)"
+        )
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record({
+                "event_type": None,
+                "data_type": "http",
+                "src_ip": "203.0.113.9",
+                "dst_port": 8800,
+                "request": request,
+                "response": "200",
+                "method": "GET",
+                "id": "sess-4",
+                "timestamp": "2026-08-11T14:51:01.724936",
+            })
+        assert mapped is not None
+        assert mapped["dst_port"] == 80  # internal 8800 normalized to the bait port
+        pd = mapped["protocol_data"]
+        assert pd["http_method"] == "GET"
+        assert pd["http_path"] == "/index.html"
+        assert pd["http_status"] == 200
+        assert pd["http_user_agent"] == "Mozilla/5.0 (Nmap Scripting Engine)"
+        assert pd["http_host"] == "10.0.0.5:8800"
+        # Still carries the default asset identity alongside the new fields.
+        assert pd["vendor"] == "Siemens"
+
+    def test_http_probe_of_unknown_path_returns_404(self):
+        cf = _reload_module()
+        request = "('/awp/Bootstrapper', [('User-Agent', 'curl/7.68.0')], None)"
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record({
+                "event_type": None,
+                "data_type": "http",
+                "src_ip": "203.0.113.9",
+                "dst_port": 8800,
+                "request": request,
+                "response": "404",
+                "method": "GET",
+                "id": "sess-5",
+                "timestamp": "2026-08-11T14:51:01.724936",
+            })
+        assert mapped["protocol_data"]["http_path"] == "/awp/Bootstrapper"
+        assert mapped["protocol_data"]["http_status"] == 404
 
 
 class TestObservationTimestamp:
