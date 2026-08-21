@@ -245,6 +245,30 @@ def _mbap(pdu_hex: str, txid: int = 1, unit: int = 1) -> str:
     return "b'" + (header + bytes([unit]) + pdu).hex() + "'"
 
 
+def _s7_frame(
+    params: bytes, data: bytes = b"", *, tpdu_type: int = 0xF0, pdu_type: int = 1
+) -> str:
+    """Wrap an S7 params/data pair in COTP+TPKT, in Conpot's bytes-repr form.
+
+    Mirrors `_mbap` above for S7comm's extra protocol layer. `cotp_length`
+    is set to the true `1 (tpdu_type) + 1 (opt_field) + 0 (no COTP payload)`
+    Conpot itself always sends, i.e. 2 -- real S7 content rides in the COTP
+    trailer, not the COTP payload.
+    """
+    s7_header = (
+        bytes([0x32, pdu_type])
+        + b"\x00\x00"  # reserved
+        + b"\x00\x01"  # request_id
+        + len(params).to_bytes(2, "big")
+        + len(data).to_bytes(2, "big")
+    )
+    cotp = bytes([2, tpdu_type, 0x80]) if tpdu_type == 0xF0 else bytes([2, tpdu_type])
+    trailer = s7_header + params + data if tpdu_type == 0xF0 else b""
+    tpkt_payload = cotp + trailer
+    tpkt = bytes([3, 0]) + len(tpkt_payload).to_bytes(2, "big") + tpkt_payload
+    return "b'" + tpkt.hex() + "'"
+
+
 class TestModbusParse:
     """AC #9 — per-function-code interpretation of the logged Modbus ADU."""
 
@@ -484,6 +508,71 @@ class TestModbusParse:
         }
 
 
+class TestS7commParse:
+    """`_parse_s7comm_request` — the stringified TPKT+COTP+S7 request frame.
+
+    The branch this replaces gated on `isinstance(request, dict)`, which
+    Conpot's actual `b'...'` hex-string request never satisfies -- dead code,
+    same bug shape as the OT-HTTP gap.
+    """
+
+    def test_plc_stop_reports_the_param_byte(self):
+        cf = _reload_module()
+        raw = _s7_frame(params=bytes([0x29]))
+        assert cf._parse_s7comm_request(raw) == {"s7_function": 0x29}
+
+    def test_szl_module_identification_reports_the_ssl_id_not_the_param_byte(self):
+        """Every SZL read shares param 0x00 -- the ssl_id in DATA is what
+        actually distinguishes "module identification" (17) from any other
+        system status list, so it's what has to end up in `s7_function` for
+        the `ot-s7comm-szl-read` rule (which matches on 17, not 0x00) to fire.
+        """
+        cf = _reload_module()
+        params = bytes(8)  # diagnostics header, only its presence is checked
+        data = bytes([0x00, 0x00]) + (2).to_bytes(2, "big") + (17).to_bytes(2, "big")
+        raw = _s7_frame(params=params, data=data)
+        assert cf._parse_s7comm_request(raw) == {"s7_function": 17}
+
+    def test_szl_with_zero_next_bytes_falls_back_to_the_param_byte(self):
+        cf = _reload_module()
+        params = bytes(8)
+        data = bytes([0x00, 0x00, 0x00, 0x00])  # next_bytes == 0, no ssl_id
+        raw = _s7_frame(params=params, data=data)
+        assert cf._parse_s7comm_request(raw) == {"s7_function": 0x00}
+
+    def test_other_function_code_reported_generically(self):
+        """(i) No layout is guessed for read/write/block-transfer params --
+        the code is kept, mirroring the Modbus parser's unknown-FC fallback.
+        """
+        cf = _reload_module()
+        raw = _s7_frame(params=bytes([0x04]))  # "read", not implemented by Conpot
+        assert cf._parse_s7comm_request(raw) == {"s7_function": 0x04}
+
+    def test_connection_request_tpdu_has_no_s7_payload(self):
+        """tpdu_type 0xE0 (COTP CR) precedes any S7 exchange -- nothing to
+        parse yet, not a parse failure.
+        """
+        cf = _reload_module()
+        raw = _s7_frame(params=bytes([0x29]), tpdu_type=0xE0)
+        assert cf._parse_s7comm_request(raw) == {}
+
+    @pytest.mark.parametrize(
+        "raw", [None, "", "not-hex-at-all", "b'zz'", "b'03000004'"]
+    )
+    def test_unparseable_request_returns_empty(self, raw):
+        """Existing contract: {} lets the forwarder still POST the event."""
+        cf = _reload_module()
+        assert cf._parse_s7comm_request(raw) == {}
+
+    def test_short_frame_with_no_params_returns_empty(self):
+        """A negotiate/other PDU declaring param_length but truncated before
+        it degrades to {}, not a wrong function code.
+        """
+        cf = _reload_module()
+        raw = _s7_frame(params=b"")  # param_length == 0 -- nothing to report
+        assert cf._parse_s7comm_request(raw) == {}
+
+
 class TestHttpParse:
     """`_parse_http_request` — the stringified (path, headers, body) tuple."""
 
@@ -661,6 +750,39 @@ class TestMapRecordLifecycle:
             })
         assert mapped["protocol_data"]["http_path"] == "/awp/Bootstrapper"
         assert mapped["protocol_data"]["http_status"] == 404
+
+    def test_s7comm_plc_stop_reaches_protocol_data(self):
+        """The bug this closes: `isinstance(request, dict)` never matched
+        Conpot's real hex-string request, so s7_function never populated."""
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record({
+                "event_type": None,
+                "data_type": "s7comm",
+                "src_ip": "203.0.113.9",
+                "dst_port": 10201,
+                "request": _s7_frame(params=bytes([0x29])),
+                "id": "sess-6",
+                "timestamp": "2026-08-11T14:51:01.724936",
+            })
+        assert mapped is not None
+        assert mapped["dst_port"] == 102  # internal 10201 normalized to the bait port
+        assert mapped["protocol_data"]["s7_function"] == 0x29
+
+    def test_s7comm_dict_request_still_passes_through_legacy_shape(self):
+        """Defensive compat: if a future Conpot ever emits a dict here."""
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record({
+                "event_type": None,
+                "data_type": "s7comm",
+                "src_ip": "203.0.113.9",
+                "dst_port": 10201,
+                "request": {"function": 17},
+                "id": "sess-7",
+                "timestamp": "2026-08-11T14:51:01.724936",
+            })
+        assert mapped["protocol_data"]["s7_function"] == 17
 
 
 class TestObservationTimestamp:

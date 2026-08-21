@@ -334,6 +334,98 @@ def _parse_modbus_request(raw: str | None) -> dict[str, Any]:
         return parsed
 
 
+def _parse_s7comm_request(raw: str | None) -> dict[str, Any]:
+    """Interpret Conpot's stringified TPKT+COTP+S7 request frame.
+
+    Conpot's s7_server.py logs `request` as `str(codecs.encode(data, "hex"))`
+    where `data` is the RAW WIRE FRAME (TPKT header + COTP header + the full
+    S7 PDU) -- the same `b'...'` hex-string shape `_parse_modbus_request`
+    already handles, just with two protocol layers wrapped around the S7
+    payload instead of none. The forwarder's s7comm branch used to gate on
+    `isinstance(request, dict)`, which this string never satisfies -- dead
+    code since Conpot has never emitted a dict here, same bug shape as the
+    OT-HTTP gap this closes for a different protocol.
+
+    Layout (see tpkt.py / cotp.py / s7.py):
+      TPKT:  version(1) reserved(1) length(2)            -- COTP starts @ 4
+      COTP:  length(1) tpdu_type(1) [opt_field(1) if 0xF0] -- only 0xF0 (Data
+             TPDU) carries an S7 payload; connection request/confirm frames
+             (0xE0) have none and degrade to {} rather than being mis-parsed.
+      S7:    magic(1)=0x32 pdu_type(1) reserved(2) request_id(2)
+             param_length(2) data_length(2) -- 10 bytes, request PDUs only
+             (pdu_type==1; Conpot only ever logs client-sent bytes as
+             "request", so anything else is unexpected, not a case to guess).
+      params[0] is the top-level S7 function code. A diagnostics/SZL read
+      (params[0] == 0x00) shares that one code across every SZL sub-request,
+      so the function that actually matters -- WHICH system status list, e.g.
+      17 = module identification -- lives 4 bytes into the DATA section
+      instead (mirrors S7.request_diagnostics's `data_ssl_id` extraction).
+
+    Malformed or truncated frames degrade to {} (or a partial dict) rather
+    than raising -- same degrade-gracefully contract as `_parse_modbus_request`.
+    """
+    if not raw:
+        return {}
+    cleaned = raw.strip()
+    if cleaned.startswith("b'") and cleaned.endswith("'"):
+        cleaned = cleaned[2:-1]
+    elif cleaned.startswith('b"') and cleaned.endswith('"'):
+        cleaned = cleaned[2:-1]
+    try:
+        b = bytes.fromhex(cleaned)
+    except ValueError:
+        return {}
+
+    if len(b) < 4 or b[0] != 3:
+        return {}
+    cotp_offset = 4
+
+    if len(b) < cotp_offset + 2:
+        return {}
+    cotp_length = b[cotp_offset]
+    tpdu_type = b[cotp_offset + 1]
+    if tpdu_type != 0xF0:
+        # Connection request/confirm (0xE0) -- no S7 payload to parse.
+        return {}
+
+    s7_offset = cotp_offset + 1 + cotp_length
+    if len(b) < s7_offset + 10:
+        return {}
+    if b[s7_offset] != 0x32:
+        return {}
+    pdu_type = b[s7_offset + 1]
+    if pdu_type != 1:
+        return {}
+
+    try:
+        # magic(1) pdu_type(1) reserved(2) request_id(2) param_length(2) ...
+        # -- param_length is the 3rd H, at offset 6, not 4 (that's request_id).
+        param_length = _u16(b, s7_offset + 6)
+    except _ShortFrame:
+        return {}
+
+    params_offset = s7_offset + 10
+    if param_length < 1 or len(b) < params_offset + param_length:
+        return {}
+    param = b[params_offset]
+
+    if param == 0x00:
+        data_offset = params_offset + param_length
+        if len(b) >= data_offset + 6:
+            try:
+                next_bytes = _u16(b, data_offset + 2)
+            except _ShortFrame:
+                next_bytes = 0
+            if next_bytes > 0:
+                try:
+                    return {"s7_function": _u16(b, data_offset + 4)}
+                except _ShortFrame:
+                    pass
+        return {"s7_function": param}
+
+    return {"s7_function": param}
+
+
 # `protocol_data` rides in a STIX SCO, a Postgres JSONB column and an LLM
 # prompt, same reasoning as `_MAX_WRITTEN_VALUES` above -- attacker-supplied
 # text (a path, a header, a POST body) is unbounded and has to be capped
@@ -511,8 +603,16 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
         protocol_data["type_id"] = request.get("type_id")
         protocol_data["cot"] = request.get("cot")
         protocol_data["ioa"] = request.get("ioa")
-    elif data_type == "s7comm" and isinstance(request, dict):
-        protocol_data["s7_function"] = request.get("function")
+    elif data_type == "s7comm":
+        # `request` is a string like `b'0300...'` in every version observed
+        # so far -- the `isinstance(request, dict)` branch this replaces
+        # never matched real traffic, same bug shape as OT-HTTP.
+        if isinstance(request, str):
+            protocol_data.update(_parse_s7comm_request(request))
+        elif isinstance(request, dict):
+            fn = request.get("function")
+            if fn is not None:
+                protocol_data["s7_function"] = fn
     elif data_type == "http":
         method = record.get("method")
         if isinstance(method, str) and method:
