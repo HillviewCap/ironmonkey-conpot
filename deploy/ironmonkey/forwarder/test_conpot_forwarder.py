@@ -533,6 +533,18 @@ class TestS7commParse:
         raw = _s7_frame(params=params, data=data)
         assert cf._parse_s7comm_request(raw) == {"s7_function": 17}
 
+    def test_szl_component_identification_reports_the_ssl_id(self):
+        """Same shape as module identification (SZL 17), but SZL 28 (0x001C,
+        Component Identification) -- the other identification SZL the
+        s7-315-substation template serves, and the one `ot-s7comm-szl-read`
+        didn't match until it was widened alongside this test.
+        """
+        cf = _reload_module()
+        params = bytes(8)  # diagnostics header, only its presence is checked
+        data = bytes([0x00, 0x00]) + (2).to_bytes(2, "big") + (28).to_bytes(2, "big")
+        raw = _s7_frame(params=params, data=data)
+        assert cf._parse_s7comm_request(raw) == {"s7_function": 28}
+
     def test_szl_with_zero_next_bytes_falls_back_to_the_param_byte(self):
         cf = _reload_module()
         params = bytes(8)
