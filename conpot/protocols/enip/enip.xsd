@@ -12,6 +12,14 @@
                             <xs:element type="xs:string" name="SerialNumber"/>
                             <xs:element type="xs:unsignedInt" name="ProductRevision" />
                             <xs:element type="xs:unsignedInt" name="ProductCode" />
+                            <!-- Optional (Phase 2 step H10). Omitting it leaves
+                                 cpppo's 0x3160 Identity default, which is
+                                 identical on every unmodified Conpot ENIP
+                                 endpoint and is therefore part of the
+                                 fingerprint. String so a 0x-prefixed value
+                                 reads the way the CIP spec writes it. -->
+                            <xs:element type="xs:string" name="StatusWord"
+                                        minOccurs="0" maxOccurs="1" />
                         </xs:sequence>
                     </xs:complexType>
                 </xs:element>

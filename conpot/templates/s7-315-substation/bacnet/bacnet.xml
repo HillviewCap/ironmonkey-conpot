@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BACnet/IP device for the IronMonkey S7-315-2 PN/DP substation persona
+  (Phase 2 step H10). Bound on 47808/udp inside and out.
+
+  Persona rationale. The S7-315 runs the primary plant; BACnet is not a
+  protection or a metering protocol and would be wrong on the PLC itself. It
+  is the right protocol for the OTHER controller a substation building has:
+  the one watching transformer-room temperature, humidity, ventilation and
+  door contacts. Siemens Schweiz AG builds exactly that class of device
+  (Desigo PXC), and holds ASHRAE BACnet vendor identifier 7, so the pairing
+  is internally consistent with the Siemens story rather than contradicting
+  it — one site, one vendor, two devices doing two jobs.
+
+  OPSEC: none of these values is an upstream Conpot default. The default
+  template answers as an Alerton VAV-DD Controller whose device_name is the
+  literal string "SystemName" (Conpot reads device_name as a literal, not as
+  a databus key — see BacnetServer.__init__), and that string is a Conpot
+  tell on its own.
+
+  Element ORDER in device_info is load-bearing: BACnetApp.
+  get_objects_and_properties takes the device identifier positionally, as the
+  second child. Keep device_name first and device_identifier second.
+-->
+<bacnet enabled="True" host="0.0.0.0" port="47808">
+    <device_info>
+        <device_name>SUBSTATION-01-BMS</device_name>
+        <device_identifier>1101</device_identifier>
+        <vendor_name>Siemens Schweiz AG</vendor_name>
+        <vendor_identifier>7</vendor_identifier>
+        <max_apdu_length_accepted>1476</max_apdu_length_accepted>
+        <segmentation_supported>segmentedBoth</segmentation_supported>
+        <model_name>PXC4.E16</model_name>
+        <protocol_version>1</protocol_version>
+    </device_info>
+    <object_list>
+        <!-- Transformer-room environment. present_value is read back through
+             ast.literal_eval, so every value here has to stay a Python
+             literal (a bare number, not "24.5 C"). -->
+        <object name="objectTransformerRoomTemp">
+            <properties>
+                <object_identifier>12</object_identifier>
+                <object_name>AI_TX_ROOM_TEMP</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>24.5</present_value>
+            </properties>
+        </object>
+        <object name="objectTransformerRoomHumidity">
+            <properties>
+                <object_identifier>13</object_identifier>
+                <object_name>AI_TX_ROOM_RH</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>41.0</present_value>
+            </properties>
+        </object>
+        <object name="objectExhaustFanRun">
+            <properties>
+                <object_identifier>14</object_identifier>
+                <object_name>BI_EXH_FAN_RUN</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>1</present_value>
+            </properties>
+        </object>
+        <object name="objectDoorContact">
+            <properties>
+                <object_identifier>15</object_identifier>
+                <object_name>BI_DOOR_CONTACT</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>0</present_value>
+            </properties>
+        </object>
+    </object_list>
+</bacnet>
