@@ -16,6 +16,13 @@ from conpot.protocols.snmp.gevent_transport import GeventUdpTransport
 
 logger = logging.getLogger(__name__)
 
+# The one v1/v2c community this device answers on. Named rather than inlined
+# because the dispatcher needs the same value to tell a credential guess from
+# a rate-limited flood (step H10); two copies of "public" would drift, and the
+# drift would log every ordinary scan as a guess.
+V1_COMMUNITY = "public"
+V1_COMMUNITY_INDEX = "public-read"
+
 
 class CommandResponder(object):
     def __init__(self, host, port, raw_mibs, compiled_mibs):
@@ -43,8 +50,21 @@ class CommandResponder(object):
             self.snmpEngine, udp.SNMP_UDP_DOMAIN, GeventUdpTransport(udp_sock)
         )
 
+        # Step H10: tell the dispatcher which communities actually get an
+        # answer, which is what lets it log a rejected community (a guess) and
+        # stay quiet about a rate-limited flood. Guarded: a pysnmp release that
+        # builds the dispatcher differently must not stop the server starting.
+        dispatcher = getattr(self.snmpEngine, "transport_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.accepted_communities = frozenset({V1_COMMUNITY})
+        else:  # pragma: no cover - defensive
+            logger.warning(
+                "no transport dispatcher after add_transport; "
+                "unanswered SNMP datagrams will not be logged"
+            )
+
         # SNMPv1
-        config.add_v1_system(self.snmpEngine, "public-read", "public")
+        config.add_v1_system(self.snmpEngine, V1_COMMUNITY_INDEX, V1_COMMUNITY)
 
         # SNMPv3/USM setup
         # user: usr-md5-des, auth: MD5, priv DES

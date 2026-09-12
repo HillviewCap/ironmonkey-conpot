@@ -8,9 +8,15 @@ import pysnmp.smi.error
 from pysnmp import debug
 import gevent
 import conpot.core as conpot_core
+from conpot.protocols.snmp import message_peek
 from conpot.utils.networking import get_interface_ip
 
 logger = logging.getLogger(__name__)
+
+# The number this class carries is pysnmp's display version (msgVersion + 1
+# below v3), not the wire value, so it needs its own mapping.
+# `message_peek.version_label` maps the wire value; both spell v2c the same way.
+_RESPONDER_VERSION_LABELS = {1: "1", 2: "2c", 3: "3"}
 
 
 def _tarpit_active(tarpit):
@@ -47,6 +53,27 @@ class conpot_extension(object):
         event_type = "SNMPv{0} {1}".format(version, msg_type)
         request = {"oid": str(req_oid), "val": str(req_val)}
         response = None
+
+        # Step H10: the request type and the SNMP version as their own fields,
+        # rather than only embedded in `event_type` -- the forwarder maps this
+        # dict onto `protocol_data` and must not have to parse a display string
+        # to learn whether the attacker read or wrote.
+        request["command"] = msg_type
+        version_label = _RESPONDER_VERSION_LABELS.get(version)
+        if version_label:
+            request["version"] = version_label
+        request["answered"] = True
+        request["varbinds"] = len(req_varBinds)
+
+        # The community, read off the wire by the dispatcher before pysnmp
+        # mapped it to a securityName. Marking the peek answered here is what
+        # tells the dispatcher this datagram got a response, so it does not
+        # additionally log it as a rejected-community guess.
+        peeked = message_peek.current_for(addr)
+        if peeked is not None:
+            peeked.answered = True
+            if peeked.community is not None:
+                request["community"] = peeked.community
 
         logger.info("%s request from %s: %s %s", event_type, addr, req_oid, req_val)
 

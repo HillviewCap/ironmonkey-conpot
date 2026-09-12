@@ -70,6 +70,14 @@ _PORT_MAP: dict[int, int] = {
     10201: 102,   # S7Comm (ISO-TSAP)
     2404: 2404,   # IEC-104 (same)
     8800: 80,     # HTTP SCADA
+    # Phase 2 step H10. SNMP has to move: Conpot runs unprivileged so it
+    # cannot bind 161, and snmp.xsd types the port attribute as xs:short so
+    # the internal port has to stay under 32768 as well. BACnet and
+    # EtherNet/IP already sit above 1024, so their internal and published
+    # ports are the same; the identity entries are kept for the documentation.
+    16100: 161,    # SNMP
+    47808: 47808,  # BACnet/IP
+    44818: 44818,  # EtherNet/IP
 }
 
 _REDIS: redis.Redis | None = None
@@ -680,6 +688,154 @@ def _parse_http_request(raw: str | None, response: Any) -> dict[str, Any]:
     return parsed
 
 
+# ── SNMP / BACnet / EtherNet-IP (Phase 2 step H10) ──────────────────────────
+#
+# All three log `request` as a JSON object, the same shape IEC-104 has used
+# since c8e4b31, so none of them needs a wire parser here: the Conpot-side
+# handler patches already did the decoding, and this end only has to rename
+# the keys into the flat, protocol-prefixed namespace `protocol_data` uses.
+#
+# Renaming rather than passing the dict through is deliberate. IronPot's
+# adapter and the STIX session writer each hold an explicit allow-list, and a
+# bare `oid` or `service` key would collide across protocols the first time
+# two of them landed on one session; `snmp_oid` and `bacnet_service` cannot.
+
+# Text fields reuse `_cap_text`, so an OID, a community or a CIP tag name is
+# held to the same 512-character ceiling the HTTP fields are, for the same
+# reason: it is attacker-supplied text on its way into a STIX SCO, a JSONB
+# column and an LLM prompt.
+#
+# Conpot event key -> forwarded protocol_data key, per protocol. Anything the
+# handler emits that is not named here is dropped: a key that reaches
+# protocol_data but neither allow-list downstream is worse than absent,
+# because it reads as a parser bug rather than the plumbing gap it is.
+_SNMP_FIELDS = {
+    "command": "snmp_command",
+    "version": "snmp_version",
+    "community": "snmp_community",
+    "oid": "snmp_oid",
+    "val": "snmp_value",
+    "answered": "snmp_answered",
+    "varbinds": "snmp_varbinds",
+}
+
+_BACNET_FIELDS = {
+    "pdu_type": "bacnet_pdu_type",
+    "service": "bacnet_service",
+    "service_choice": "bacnet_service_choice",
+    "object_type": "bacnet_object_type",
+    "object_instance": "bacnet_object_instance",
+    "property": "bacnet_property",
+}
+
+# Already namespaced on the Conpot side, so this is an allow-list rather than
+# a rename.
+_ENIP_FIELDS = {
+    key: key
+    for key in (
+        "enip_command",
+        "enip_command_name",
+        "cip_service",
+        "cip_service_name",
+        "cip_class",
+        "cip_instance",
+        "cip_attribute",
+        "cip_element",
+        "cip_symbol",
+        "cip_path",
+        "cip_written_values",
+        "cip_values_truncated",
+    )
+}
+
+
+def _map_fields(request: Any, mapping: dict[str, str]) -> dict[str, Any]:
+    """Rename and cap the keys of a dict-shaped Conpot `request`.
+
+    Strings are capped exactly as the HTTP branch caps its own, flagging
+    `<field>_truncated` so the cap is reported as our doing rather than
+    silently shortening attacker text. A list is capped by element count for
+    the same reason `written_values` is.
+    """
+    parsed: dict[str, Any] = {}
+    if not isinstance(request, dict):
+        return parsed
+    for source_key, field_name in mapping.items():
+        value = request.get(source_key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if not value:
+                continue
+            parsed[field_name] = _cap_text(value, field_name, parsed)
+        elif isinstance(value, list):
+            if len(value) > _MAX_WRITTEN_VALUES:
+                parsed[f"{field_name}_truncated"] = True
+                value = value[:_MAX_WRITTEN_VALUES]
+            parsed[field_name] = value
+        else:
+            parsed[field_name] = value
+    return parsed
+
+
+def _parse_snmp_request(request: Any) -> dict[str, Any]:
+    """Flatten an SNMP exchange onto protocol_data.
+
+    A datagram the engine never answered carries no `command` -- the
+    dispatcher logs it from outside any responder, because a rejected
+    community means no responder ran at all. Naming that state explicitly
+    keeps a community guess from rendering as a contentless exchange
+    downstream, which is precisely what the SOC content gate drops.
+    """
+    parsed = _map_fields(request, _SNMP_FIELDS)
+    if parsed.get("snmp_answered") is False and "snmp_command" not in parsed:
+        parsed["snmp_command"] = "unanswered"
+    return parsed
+
+
+def _parse_bacnet_request(request: Any) -> dict[str, Any]:
+    return _map_fields(request, _BACNET_FIELDS)
+
+
+def _parse_enip_request(request: Any) -> dict[str, Any]:
+    return _map_fields(request, _ENIP_FIELDS)
+
+
+# Which emulated DEVICE the attacker reached. Modbus, S7comm, IEC-104 and the
+# SCADA web UI are all the S7-315 itself, and SNMP is too -- a PN/DP CPU
+# answers SNMP natively. BACnet and EtherNet/IP are not: the substation
+# persona serves them as two other boxes on the same LAN (step H10), a Siemens
+# building-automation station watching the transformer room and a Rockwell
+# Compact I/O adapter carrying auxiliary I/O.
+#
+# Getting this wrong is not cosmetic. `asset_type`/`vendor`/`model` seed the
+# uuid5 of the `x-ics-asset` node IronPot writes, so one identity for all
+# three would tell an analyst that a BACnet write landed on the S7 that runs
+# the plant. `asset_type` must stay inside the enum in
+# ironmonkey-unified/shared/stix-extensions/x-ics-asset.json.
+#
+# H11 (sector personas, --template) makes the persona itself a choice; when it
+# does, this map becomes per-template configuration rather than a literal.
+_DEFAULT_ASSET: dict[str, Any] = {
+    "asset_type": "plc",
+    "vendor": "Siemens",
+    "model": "S7-315-2 PN/DP",
+}
+
+_ASSET_BY_SERVICE: dict[str, dict[str, Any]] = {
+    "bacnet": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "PXC4.E16",
+    },
+    "enip": {
+        "asset_type": "network_device",
+        "vendor": "Allen-Bradley",
+        "model": "1769-AENTR/B",
+    },
+}
+
+
 # Story 18.16 -- per-exchange observation time.
 #
 # `_exchange_key` upstream hashes (exchange_ts, service, protocol_data). Conpot
@@ -720,8 +876,20 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
     # on the lab bench 2026-08-11 alongside NEW_CONNECTION/CONNECTION_LOST) and
     # was previously unfiltered, so it forwarded as a phantom exchange carrying
     # nothing but asset_type/vendor/model.
+    #
+    # CONNECTION_CLOSED and CONNECTION_FAILED are the ENIP server's two
+    # (step H10). CONNECTION_CLOSED is per TRANSACTION there, not per
+    # connection, so on a busy ENIP session it would otherwise forward one
+    # phantom exchange for every real one -- the same shape of bug
+    # CONNECTION_TERMINATED was above.
     event_type = record.get("event_type")
-    if event_type in ("NEW_CONNECTION", "CONNECTION_LOST", "CONNECTION_TERMINATED"):
+    if event_type in (
+        "NEW_CONNECTION",
+        "CONNECTION_LOST",
+        "CONNECTION_TERMINATED",
+        "CONNECTION_CLOSED",
+        "CONNECTION_FAILED",
+    ):
         return None
 
     data_type = (record.get("data_type") or "unknown").lower()
@@ -740,11 +908,9 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         dst_port = 0
 
-    protocol_data: dict[str, Any] = {
-        "asset_type": "plc",
-        "vendor": "Siemens",
-        "model": "S7-315-2 PN/DP",
-    }
+    protocol_data: dict[str, Any] = dict(
+        _ASSET_BY_SERVICE.get(data_type, _DEFAULT_ASSET)
+    )
 
     if data_type == "modbus":
         # `request` is a string like `b'00010000000601030000000a'` in 0.6.0;
@@ -775,6 +941,12 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
             protocol_data["http_method"] = method
         if isinstance(request, str):
             protocol_data.update(_parse_http_request(request, record.get("response")))
+    elif data_type == "snmp":
+        protocol_data.update(_parse_snmp_request(request))
+    elif data_type == "bacnet":
+        protocol_data.update(_parse_bacnet_request(request))
+    elif data_type == "enip":
+        protocol_data.update(_parse_enip_request(request))
 
     # Drop None values to keep the payload compact.
     protocol_data = {k: v for k, v in protocol_data.items() if v is not None}

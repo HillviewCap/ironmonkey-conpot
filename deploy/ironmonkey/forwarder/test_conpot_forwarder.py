@@ -1126,3 +1126,227 @@ class TestCredentialCapture:
             "dst_port", "service", "session_id", "username", "password",
             "source_type", "protocol_data", "parent_session_id",
         ])
+# ── SNMP / BACnet / EtherNet-IP mapping (Phase 2 step H10) ──────────────────
+
+
+class TestNewOtProtocolMapping:
+    """The three protocols step H10 turns on.
+
+    All three log `request` as a JSON object, the shape IEC-104 has used since
+    the fork's c8e4b31, so the work here is renaming rather than parsing: the
+    Conpot-side handler patches did the decoding. What these tests pin is the
+    renaming, the per-protocol asset identity, and the two ENIP lifecycle
+    event types that would otherwise forward as phantom exchanges.
+    """
+
+    @staticmethod
+    def _map(record):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            return cf._map_record(record)
+
+    @staticmethod
+    def _record(data_type, request, dst_port, event_type=None):
+        return {
+            "id": "sess-h10",
+            "src_ip": "203.0.113.7",
+            "dst_port": dst_port,
+            "data_type": data_type,
+            "request": request,
+            "response": None,
+            "method": None,
+            "event_type": event_type,
+        }
+
+    def test_snmp_get_maps_community_and_oid(self):
+        mapped = self._map(
+            self._record(
+                "snmp",
+                {
+                    "oid": "1.3.6.1.2.1.1.1.0",
+                    "val": "",
+                    "command": "Get",
+                    "version": "2c",
+                    "answered": True,
+                    "varbinds": 1,
+                    "community": "public",
+                },
+                16100,
+            )
+        )
+        # 16100 is an internal port; the attacker hit 161.
+        assert mapped["dst_port"] == 161
+        assert mapped["service"] == "snmp"
+        data = mapped["protocol_data"]
+        assert data["snmp_community"] == "public"
+        assert data["snmp_command"] == "Get"
+        assert data["snmp_version"] == "2c"
+        assert data["snmp_oid"] == "1.3.6.1.2.1.1.1.0"
+        assert data["snmp_answered"] is True
+        # `val` is empty on a GET; an empty string is not a captured value.
+        assert "snmp_value" not in data
+        # SNMP is the S7 itself answering, so the asset identity is unchanged.
+        assert data["vendor"] == "Siemens"
+        assert data["model"] == "S7-315-2 PN/DP"
+
+    def test_snmp_set_carries_the_value_written(self):
+        data = self._map(
+            self._record(
+                "snmp",
+                {
+                    "oid": "1.3.6.1.2.1.1.6.0",
+                    "val": "OWNED",
+                    "command": "Set",
+                    "version": "2c",
+                    "answered": True,
+                    "varbinds": 1,
+                    "community": "public",
+                },
+                16100,
+            )
+        )["protocol_data"]
+        assert data["snmp_command"] == "Set"
+        assert data["snmp_value"] == "OWNED"
+
+    def test_rejected_community_is_named_rather_than_left_blank(self):
+        """A guess must not render as a contentless exchange.
+
+        The dispatcher logs it from outside any responder, so there is no
+        command to report -- and a protocol_data carrying only a community
+        would normalise to something the SOC content gate drops.
+        """
+        data = self._map(
+            self._record(
+                "snmp",
+                {"community": "private", "version": "2c", "answered": False},
+                16100,
+            )
+        )["protocol_data"]
+        assert data["snmp_community"] == "private"
+        assert data["snmp_answered"] is False
+        assert data["snmp_command"] == "unanswered"
+
+    def test_bacnet_read_property_maps_object_and_property(self):
+        mapped = self._map(
+            self._record(
+                "bacnet",
+                {
+                    "pdu_type": "ConfirmedRequestPDU",
+                    "service": "ReadPropertyRequest",
+                    "service_choice": 12,
+                    "object_type": "analogInput",
+                    "object_instance": 12,
+                    "property": "presentValue",
+                },
+                47808,
+            )
+        )
+        assert mapped["dst_port"] == 47808
+        data = mapped["protocol_data"]
+        assert data["bacnet_service"] == "ReadPropertyRequest"
+        assert data["bacnet_service_choice"] == 12
+        assert data["bacnet_object_type"] == "analogInput"
+        assert data["bacnet_object_instance"] == 12
+        assert data["bacnet_property"] == "presentValue"
+
+    def test_bacnet_is_a_different_emulated_device_than_the_plc(self):
+        """asset_type/vendor/model seed the uuid5 of the x-ics-asset node.
+
+        One identity for every protocol would tell an analyst a BACnet write
+        landed on the S7 that runs the plant.
+        """
+        data = self._map(
+            self._record(
+                "bacnet",
+                {"pdu_type": "UnconfirmedRequestPDU", "service": "WhoIsRequest"},
+                47808,
+            )
+        )["protocol_data"]
+        assert data["model"] == "PXC4.E16"
+        assert data["vendor"] == "Siemens"
+
+    def test_enip_write_maps_service_path_and_values(self):
+        mapped = self._map(
+            self._record(
+                "enip",
+                {
+                    "enip_command": 111,
+                    "enip_command_name": "send_rr_data",
+                    "cip_service": 16,
+                    "cip_service_name": "set_attribute_single",
+                    "cip_class": 100,
+                    "cip_instance": 1,
+                    "cip_attribute": 1,
+                    "cip_path": "@0x64/1/1",
+                    "cip_written_values": [7],
+                },
+                44818,
+            )
+        )
+        assert mapped["dst_port"] == 44818
+        data = mapped["protocol_data"]
+        assert data["cip_service"] == 16
+        assert data["cip_service_name"] == "set_attribute_single"
+        assert data["cip_path"] == "@0x64/1/1"
+        assert data["cip_written_values"] == [7]
+        # A Rockwell I/O adapter beside the Siemens PLC, not the PLC.
+        assert data["vendor"] == "Allen-Bradley"
+        assert data["model"] == "1769-AENTR/B"
+        assert data["asset_type"] == "network_device"
+
+    def test_enip_written_values_are_capped_at_the_trust_boundary(self):
+        data = self._map(
+            self._record(
+                "enip",
+                {
+                    "enip_command": 111,
+                    "cip_service": 77,
+                    "cip_written_values": list(range(200)),
+                },
+                44818,
+            )
+        )["protocol_data"]
+        assert len(data["cip_written_values"]) == 64
+        assert data["cip_written_values_truncated"] is True
+
+    @pytest.mark.parametrize(
+        "event_type", ["CONNECTION_CLOSED", "CONNECTION_FAILED"]
+    )
+    def test_enip_lifecycle_events_are_not_forwarded(self, event_type):
+        """CONNECTION_CLOSED is per TRANSACTION in the ENIP server.
+
+        Forwarding it would post one phantom exchange -- asset identity and
+        nothing else -- for every real one on a busy session.
+        """
+        assert (
+            self._map(self._record("enip", None, 44818, event_type=event_type))
+            is None
+        )
+
+    def test_unknown_keys_from_a_handler_are_dropped(self):
+        """Two allow-lists upstream drop an unknown key silently.
+
+        A key that reaches protocol_data but neither of them reads downstream
+        as a parser bug rather than the plumbing gap it is, so the rename map
+        is the gate rather than a pass-through.
+        """
+        data = self._map(
+            self._record(
+                "bacnet",
+                {"service": "WhoIsRequest", "some_future_field": "x"},
+                47808,
+            )
+        )["protocol_data"]
+        assert "some_future_field" not in data
+        assert data["bacnet_service"] == "WhoIsRequest"
+
+    def test_long_text_is_capped_and_flagged(self):
+        data = self._map(
+            self._record(
+                "enip",
+                {"cip_service": 76, "cip_symbol": "A" * 900},
+                44818,
+            )
+        )["protocol_data"]
+        assert len(data["cip_symbol"]) == 512
+        assert data["cip_symbol_truncated"] is True

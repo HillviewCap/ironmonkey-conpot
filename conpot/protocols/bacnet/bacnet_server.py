@@ -81,7 +81,14 @@ class BacnetServer(object):
             except DecodingError:
                 logger.warning("DecodingError - PDU: {}".format(pdu))
                 return
-            self.bacnet_app.indication(apdu, address, self.thisDevice)
+            # Step H10: `session` reaches the app so `indication()` can log the
+            # service the attacker actually asked for. Before this, the only
+            # event a BACnet session ever carried was the NEW_CONNECTION above
+            # -- a Who-Is sweep and a WriteProperty against the plant left
+            # identical, empty records by the time they reached the forwarder.
+            self.bacnet_app.indication(
+                apdu, address, self.thisDevice, session=session
+            )
             # send an appropriate response from BACnet app to the attacker
             self.bacnet_app.response(self.bacnet_app._response, address)
         logger.info(
