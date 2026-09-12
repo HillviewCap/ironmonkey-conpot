@@ -159,6 +159,46 @@ class TestSubstationHmiAuth(unittest.TestCase):
 
     # ── Template validity ────────────────────────────────────────────────────
 
+    def test_every_served_page_is_pure_ascii(self):
+        """Conpot's GET path encodes the body with `.encode("ascii")`.
+
+        `command_responder.do_GET:890` calls `utils.networking.str_to_bytes`,
+        which is ASCII-only. A single non-ASCII byte anywhere in an htdocs file
+        therefore raises `UnicodeEncodeError` AFTER the status line and headers
+        have already gone out, so the client gets a 200 (or a 401) followed by
+        a truncated body and a broken connection, and the only trace is a
+        traceback in the container log.
+
+        It is invisible from the template: the page looks right in an editor
+        and the node validates. `do_POST:966` uses a plain `.encode()` (UTF-8)
+        and does NOT have the problem, which is why a POST-only test would
+        have missed this entirely.
+
+        Found the hard way: the start page shipped with an em dash and eight
+        U+2022 bullets in the password placeholder, so `GET /index.html` --
+        the persona's front door, and the page carrying the `/login` form this
+        step depends on -- had never actually served to a client.
+        """
+        conpot_dir = os.path.dirname(conpot.__file__)
+        htdocs = os.path.join(conpot_dir, "templates", TEMPLATE, "http", "htdocs")
+        offenders = []
+        for root, _dirs, files in os.walk(htdocs):
+            for name in files:
+                path = os.path.join(root, name)
+                with open(path, "rb") as fh:
+                    body = fh.read()
+                try:
+                    body.decode("ascii")
+                except UnicodeDecodeError as exc:
+                    rel = os.path.relpath(path, htdocs)
+                    offenders.append("{0}: {1}".format(rel, exc))
+        self.assertEqual(
+            [],
+            offenders,
+            "non-ASCII bytes in an htdocs file break GET at str_to_bytes; "
+            "use an HTML entity (&mdash;, &bull;) instead",
+        )
+
     def test_http_template_validates_against_the_protocol_xsd(self):
         """The XSD orders a node's children (status, tarpit, triggers,
         headers, alias). Conpot rejects the whole template on a violation, so
