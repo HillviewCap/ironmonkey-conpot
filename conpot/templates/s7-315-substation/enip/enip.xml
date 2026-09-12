@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EtherNet/IP for the IronMonkey S7-315-2 PN/DP substation persona
+  (Phase 2 step H10). Bound on 44818, TCP and UDP.
+
+  Persona rationale, and why an ALLEN-BRADLEY device sits on a Siemens site.
+  EtherNet/IP on a Siemens PLC would be wrong, and Decision 18 asks for the
+  protocol anyway because attacker tooling scans 44818 regardless of what the
+  device turns out to be and SIR-006-05 counts protocol reach. The resolution
+  is to make it a SEPARATE device rather than a second personality on the
+  S7: a 1769-AENTR is a plain Compact I/O EtherNet/IP adapter, the kind of
+  single-purpose third-party box that ends up on a substation LAN carrying
+  auxiliary I/O for a retrofit. It is not a controller, it does not claim to
+  run the plant, and it does not contradict the Siemens story — a mixed
+  brownfield site is the ordinary case, not the strange one.
+
+  Mode. A real EtherNet/IP device answers explicit messaging on 44818/tcp AND
+  ListIdentity discovery on 44818/udp, and the UDP half is what a scanner
+  sends first (nmap's enip-info). Serving only TCP is itself a tell.
+
+  Port 2222/udp is deliberately NOT served. It carries CIP class-1 implicit
+  I/O, which Conpot cannot emulate at all; an open port that completes nothing
+  is a stronger negative signal than a closed one. See the H10 PR and
+  docs/honeypot-ops.md.
+
+  OPSEC. The <device_info> block below is now load-bearing rather than
+  decorative: before step H10, EnipConfig parsed these fields and nothing but
+  two logger.debug lines read them, so every Conpot ENIP endpoint answered
+  ListIdentity with cpppo's built-in Rockwell 1756-L61/B LOGIX5561 — vendor
+  1, product code 0x36, revision 0x0B14, serial 0x006C061A, status 0x3160 —
+  byte for byte, on all of them. EnipServer.apply_identity now feeds these
+  values to cpppo, so nothing here repeats a Conpot default.
+
+  These are plausible values for the product, not values captured from a real
+  1769-AENTR: the product code, revision, serial and status word are ours.
+  Status 0x0034 reads as configured (bit 2) with at least one I/O connection
+  established (extended status 3).
+-->
+<enip enabled="True" host="0.0.0.0" port="44818">
+    <device_info>
+        <VendorId>1</VendorId>
+        <ProductName>1769-AENTR/B</ProductName>
+        <!-- CIP device type 0x0C, Communications Adapter. -->
+        <DeviceType>12</DeviceType>
+        <SerialNumber>12841381</SerialNumber>
+        <!-- major<<8 | minor -> 0x0303, revision 3.3 -->
+        <ProductRevision>771</ProductRevision>
+        <ProductCode>191</ProductCode>
+        <StatusWord>0x0034</StatusWord>
+    </device_info>
+
+    <mode>tcp,udp</mode>
+    <latency>0.1</latency>
+    <timeout>20</timeout>
+
+    <!-- Auxiliary I/O the adapter carries for the substation. Addresses are
+         in the vendor-specific class range (0x64+) rather than upstream
+         Conpot's @22/1/x, which is another default worth not repeating. -->
+    <tags>
+        <tag name="BAY1_BREAKER_STATUS">
+            <type>SINT</type>
+            <size>1</size>
+            <value>1</value>
+            <addr>100/1/1</addr>
+        </tag>
+        <tag name="AUX_TRANSFORMER_TEMP">
+            <type>REAL</type>
+            <size>4</size>
+            <value>58.4</value>
+            <addr>100/1/2</addr>
+        </tag>
+        <tag name="IO_RACK_ID">
+            <type>SSTRING</type>
+            <size>16</size>
+            <value>SUBSTATION-01-RACK-A</value>
+            <addr>100/1/3</addr>
+        </tag>
+    </tags>
+</enip>

@@ -269,7 +269,78 @@ class BACnetApp(BIPSimpleApplication):
                     # self._response.errorClass
                     # self._response.errorCode
 
-    def indication(self, apdu, address, device):
+    # ── Session capture (Phase 2 step H10) ────────────────────────────────
+    #
+    # Wrapped under a "request" key to match the shape the Conpot forwarder
+    # already expects from every other OT protocol -- modbus, s7comm, IEC-104
+    # and http all wrap their captured request the same way.
+    #
+    # Recorded BEFORE the service is dispatched, for the same reason the
+    # IEC-104 fork patch records before dispatch (c8e4b31): Conpot implements
+    # only ReadProperty, Who-Is and Who-Has, so a WriteProperty or a
+    # ReinitializeDevice -- the two requests an analyst most wants to see --
+    # falls straight through to "Not implemented Bacnet command" and returns.
+    # Logging on the way in captures the attempt; logging on the way out would
+    # capture only the three services we happen to emulate.
+
+    @staticmethod
+    def _object_identifier_facts(value, facts):
+        """Split a BACnet object identifier into type and instance."""
+        if value is None:
+            return
+        # bacpypes yields ('analogInput', 14) once decoded, but an
+        # unrecognised type can stay an int. Keep whichever half we were
+        # actually given rather than inventing the other one.
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            facts["object_type"] = str(value[0])
+            try:
+                facts["object_instance"] = int(value[1])
+            except (TypeError, ValueError):
+                facts["object_instance"] = str(value[1])
+        else:
+            try:
+                facts["object_instance"] = int(value)
+            except (TypeError, ValueError):
+                facts["object_instance"] = str(value)
+
+    def _record_request_event(self, session, apdu_type, apdu_service, request):
+        """Log the decoded BACnet service onto the AttackSession.
+
+        Fails open: an observability write must never stop the protocol
+        answering, so an unexpected shape degrades to whatever was extracted
+        instead of raising into the datagram handler.
+        """
+        if session is None:
+            return
+        try:
+            facts = {}
+            if apdu_type is not None:
+                facts["pdu_type"] = apdu_type.__name__
+            if apdu_service is not None:
+                facts["service"] = apdu_service.__name__
+                choice = getattr(apdu_service, "serviceChoice", None)
+                if choice is not None:
+                    facts["service_choice"] = int(choice)
+            if request is not None:
+                self._object_identifier_facts(
+                    getattr(request, "objectIdentifier", None), facts
+                )
+                # Who-Has carries its target one level down, inside a
+                # WhoHasObject element rather than on the request itself.
+                target = getattr(request, "object", None)
+                if target is not None and "object_instance" not in facts:
+                    self._object_identifier_facts(
+                        getattr(target, "objectIdentifier", None), facts
+                    )
+                prop = getattr(request, "propertyIdentifier", None)
+                if prop is not None:
+                    facts["property"] = str(prop)
+            if facts:
+                session.add_event({"request": facts})
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Bacnet session capture failed: %s", exc)
+
+    def indication(self, apdu, address, device, session=None):
         """logging the received PDU type and Service request"""
         request = None
         apdu_type = apdu_types.get(apdu.apduType)
@@ -294,9 +365,14 @@ class BACnetApp(BIPSimpleApplication):
                 request.decode(apdu)
             except (AttributeError, RuntimeError, InvalidParameterDatatype) as e:
                 logger.warning("Bacnet indication: Invalid service. Error: %s" % e)
+                # A body we cannot decode is still a service somebody asked
+                # for; record the name before giving up on the rest.
+                self._record_request_event(session, apdu_type, apdu_service, None)
                 return
             except bacpypes.errors.DecodingError:
                 pass
+
+            self._record_request_event(session, apdu_type, apdu_service, request)
 
             for key, value in list(ConfirmedServiceChoice.enumerations.items()):
                 if apdu_service.serviceChoice == value:
@@ -330,9 +406,12 @@ class BACnetApp(BIPSimpleApplication):
             except (AttributeError, RuntimeError):
                 logger.exception("Bacnet indication: Invalid service.")
                 self._response = None
+                self._record_request_event(session, apdu_type, apdu_service, None)
                 return
             except bacpypes.errors.DecodingError:
                 pass
+
+            self._record_request_event(session, apdu_type, apdu_service, request)
 
             for key, value in list(UnconfirmedServiceChoice.enumerations.items()):
                 if apdu_service.serviceChoice == value:

@@ -32,10 +32,12 @@ from bacpypes.apdu import (
     WhoHasRequest,
     ReadPropertyRequest,
     ReadPropertyACK,
+    WritePropertyRequest,
 )
 from bacpypes.constructeddata import Any
 from bacpypes.primitivedata import Real
 
+import conpot.core as conpot_core
 from conpot.protocols.bacnet import bacnet_server
 from conpot.utils.greenlet import spawn_test_server, teardown_test_server
 
@@ -185,3 +187,119 @@ class TestBACnetServer(unittest.TestCase):
         with Timeout(1, False):
             results = [s.recvfrom(buf_size) for i in range(len(test_requests))]
         self.assertIsNone(results)
+
+
+class TestBACnetSubstationCapture(unittest.TestCase):
+    """BACnet session capture on the substation persona (Phase 2 step H10).
+
+    Before this step the only event a BACnet session carried was
+    NEW_CONNECTION, so a Who-Is sweep and a WriteProperty against the plant
+    left byte-identical records. `indication()` now logs the service on the
+    way IN, which is also why the WriteProperty case below is the important
+    one: Conpot implements no writeProperty handler, so a write falls straight
+    through to "Not implemented Bacnet command" and would be invisible if the
+    event were emitted after dispatch instead of before it.
+    """
+
+    def setUp(self):
+        self.bacnet_server, self.greenlet = spawn_test_server(
+            bacnet_server.BacnetServer, "s7-315-substation", "bacnet"
+        )
+        self.address = (self.bacnet_server.host, self.bacnet_server.port)
+        self._drain()
+
+    def tearDown(self):
+        teardown_test_server(self.bacnet_server, self.greenlet)
+
+    @staticmethod
+    def _drain():
+        queue = conpot_core.get_sessionManager().log_queue
+        while not queue.empty():
+            queue.get_nowait()
+
+    @staticmethod
+    def _requests():
+        queue = conpot_core.get_sessionManager().log_queue
+        out = []
+        while not queue.empty():
+            data = queue.get_nowait()["data"]
+            if "request" in data:
+                out.append(data["request"])
+        return out
+
+    def _send(self, request):
+        apdu = APDU()
+        request.encode(apdu)
+        pdu = PDU()
+        apdu.encode(pdu)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2)
+        try:
+            s.sendto(pdu.pduData, self.address)
+            try:
+                return s.recvfrom(1024)[0]
+            except Exception:
+                return None
+        finally:
+            s.close()
+
+    def test_who_is_is_recorded(self):
+        self._send(WhoIsRequest())
+        requests = self._requests()
+        self.assertTrue(requests, "a Who-Is sweep reached no session event")
+        self.assertEqual("WhoIsRequest", requests[0]["service"])
+        self.assertEqual("UnconfirmedRequestPDU", requests[0]["pdu_type"])
+
+    def test_read_property_records_object_and_property(self):
+        request = ReadPropertyRequest(
+            objectIdentifier=("analogInput", 12), propertyIdentifier=85
+        )
+        request.apduMaxResp = 1024
+        request.apduInvokeID = 101
+        self.assertIsNotNone(
+            self._send(request), "the persona did not answer a ReadProperty"
+        )
+        requests = self._requests()
+        self.assertTrue(requests)
+        self.assertEqual("ReadPropertyRequest", requests[0]["service"])
+        self.assertEqual("analogInput", requests[0]["object_type"])
+        self.assertEqual(12, requests[0]["object_instance"])
+        self.assertEqual("presentValue", requests[0]["property"])
+
+    def test_write_property_is_recorded_although_unimplemented(self):
+        request = WritePropertyRequest(
+            objectIdentifier=("analogInput", 12), propertyIdentifier=85
+        )
+        request.apduMaxResp = 1024
+        request.apduInvokeID = 102
+        request.propertyValue = Any(Real(99.0))
+        self._send(request)
+        requests = self._requests()
+        self.assertTrue(
+            requests, "a WriteProperty attempt left no record at all"
+        )
+        self.assertEqual("WritePropertyRequest", requests[0]["service"])
+        self.assertEqual("analogInput", requests[0]["object_type"])
+        self.assertEqual(12, requests[0]["object_instance"])
+
+    def test_persona_object_list_is_reachable(self):
+        """Every object in the template answers, not just the last two.
+
+        BACnetApp.readProperty walks `device.objectList.value[2:]`, so an
+        object list that grows or shrinks can silently drop its first entries
+        -- the emulated device would advertise points it then refuses to read.
+        """
+        for object_id in (
+            ("analogInput", 12),
+            ("analogInput", 13),
+            ("binaryInput", 14),
+            ("binaryInput", 15),
+        ):
+            request = ReadPropertyRequest(
+                objectIdentifier=object_id, propertyIdentifier=85
+            )
+            request.apduMaxResp = 1024
+            request.apduInvokeID = 103
+            self.assertIsNotNone(
+                self._send(request), "no answer for %r" % (object_id,)
+            )
