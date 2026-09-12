@@ -42,7 +42,11 @@ conpot/templates/s7-315-substation/   # ← upstream-style location
 ├── s7comm/s7comm.xml             # S7Comm SZL 0x011C / 0x0011 identity
 ├── http/
 │   ├── http.xml                  # HTTP config (Server: Siemens CP443-1...)
-│   └── htdocs/index.html         # SIMATIC WinCC HMI login page
+│   └── htdocs/
+│       ├── index.html            # SIMATIC WinCC HMI login page
+│       └── hmi/
+│           ├── index.html        # 401 Basic challenge (realm "SIMATIC HMI")
+│           └── denied.html       # 403 sign-in-failed page, aliased from /login
 ├── IEC104/IEC104.xml             # IEC 60870-5-104 ASDU types 1/3/13/30
 ├── snmp/                         # (empty — protocol intentionally not loaded)
 └── ssl/                          # self-signed cert for HTTPS variant
@@ -92,6 +96,21 @@ These shapes don't match a naive read of the monolithic 17.3 draft — they are 
 | `http.xml` `<global>/<headers>` | maxOccurs=1 — only one entity per global headers block; per-node headers can have many | `conpot/protocols/http/http.xsd:27-43` vs `:76-95` |
 | `IEC104.xml` `<device_info>` | `<vendor_name>`, `<product_code>` — lowercase (differs from modbus.xsd) | `conpot/protocols/IEC104/IEC104.xsd:9-10` |
 | `IEC104.xml` register `<value>` | databus key NAME, not literal value | `conpot/protocols/IEC104/IEC104.xsd:24` |
+
+### Credential bait (Phase 2 step H4)
+
+The persona asks for credentials in two places, and the forwarder decodes whichever arrives.
+
+| Path | Method | Answer | What it provokes |
+|---|---|---|---|
+| `/hmi/`, `/hmi`, `/hmi/index.html` | GET, POST | `401` + `WWW-Authenticate: Basic realm="SIMATIC HMI"` | Any client that is given a credential (`curl -u`, a browser, a stuffing tool) sends `Authorization: Basic` on the retry |
+| `/login` (alias of `/hmi/denied.html`) | POST | `403` + "Invalid user name or password" | The start page's form has always posted here; before H4 there was no node and it returned 404 |
+
+Both are ordinary static nodes. Conpot 0.6.0's `load_entity` reads a per-node `<status>` and `<headers>` for GET and POST alike (`command_responder.py:433-442`, reached from `do_GET:867` and `do_POST:935`), so no protocol-handler patch was required.
+
+There is **no credential comparison anywhere in this path**. Every pair is rejected identically, so no input — default, guessed or correct-for-a-real-device — can produce a page suggesting something is reachable behind the login. The default-credential *list* lives on the platform side (`ironmonkey-unified/shared/honeypot/default_credentials.yaml`), is read only by the STIX rule mapper, and never reaches a sensor.
+
+`conpot_forwarder.py` decodes `Authorization: Basic` (padding repaired, junk tolerated) and an `application/x-www-form-urlencoded` body (`username`/`user`/`login` and `password`/`pass`/`pwd`) into `username` and `password`, both inside `protocol_data` (per-exchange) and at the event top level. Neither is ever logged. Verify end to end with `curl -u admin:admin http://<sensor>/hmi/` and check `docs/honeypot-ops.md`.
 
 ### OPSEC scrub rules
 
