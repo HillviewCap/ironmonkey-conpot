@@ -53,6 +53,68 @@
         <node name="/index.htm">
             <alias>/index.html</alias>
         </node>
+
+        <!-- ================================================================
+             Credential bait (Phase 2 step H4, SIR-006-05).
+
+             Two paths, because a WinCC-fronted S7 serves two kinds of login
+             and an attacker tries both:
+
+               /hmi/    HTTP Basic. Answers 401 with
+                        `WWW-Authenticate: Basic realm="SIMATIC HMI"`, so any
+                        client — `curl -u`, a browser, a credential-stuffing
+                        tool — volunteers an `Authorization: Basic` header on
+                        the retry. The forwarder decodes it.
+               /login   The POST target the start page's form has always
+                        advertised. Until H4 it had no node at all, so the
+                        form's own action returned 404: both a tell that the
+                        page is scenery, and a guarantee that every credential
+                        typed into it was thrown away. It now answers 403 with
+                        a "credentials rejected" page.
+
+             Both are STATIC. Conpot 0.6.0's `load_entity` reads `<status>`
+             and `<headers>` per node for GET and POST alike
+             (command_responder.py:433-442, reached from do_GET:867 and
+             do_POST:935), so a POST gets the identical rejection a GET does
+             and no protocol-handler patch is needed. That is also the
+             security property that matters here: no credential comparison
+             exists anywhere in this path, so there is no pair — default or
+             otherwise — that can produce a success page suggesting a real
+             device is reachable behind the login.
+
+             `Cache-Control: no-store` on both: an intermediary that cached
+             the 401 would break the challenge/retry the capture depends on.
+             ================================================================ -->
+        <node name="/hmi/index.html">
+            <status>401</status>
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="WWW-Authenticate">Basic realm="SIMATIC HMI"</entity>
+                <entity name="Cache-Control">no-store</entity>
+                <entity name="Server">Siemens CP443-1 Advanced V3.3.0</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/hmi/">
+            <alias>/hmi/index.html</alias>
+        </node>
+        <node name="/hmi">
+            <alias>/hmi/index.html</alias>
+        </node>
+        <node name="/hmi/denied.html">
+            <status>403</status>
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Cache-Control">no-store</entity>
+                <entity name="Server">Siemens CP443-1 Advanced V3.3.0</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/login">
+            <alias>/hmi/denied.html</alias>
+        </node>
     </htdocs>
 
     <statuscodes>

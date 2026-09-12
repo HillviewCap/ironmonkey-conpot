@@ -911,6 +911,221 @@ class TestObservationTimestamp:
         assert not any("time" in k or "ts" in k for k in mapped["protocol_data"])
 
 
+class TestCredentialCapture:
+    """Phase 2 step H4 -- Basic and form-encoded credential decode.
+
+    SIR-006-05 ("default-credential HMI access") measured 0 for its whole
+    dry-run window because nothing on the OT path ever set `username` or
+    `password`. These pin the decode that makes it answerable.
+    """
+
+    # curl -u admin:admin http://sensor/hmi/ -- the second request, after the
+    # 401 challenge the persona's http.xml now issues.
+    BASIC_ADMIN_ADMIN = (
+        "('/hmi/', [('Host', '10.0.0.5'), ('User-Agent', 'curl/7.68.0'), "
+        "('Authorization', 'Basic YWRtaW46YWRtaW4=')], None)"
+    )
+    # A browser POST of the start page's form to its advertised action.
+    FORM_LOGIN_POST = (
+        "('/login', [('Host', '10.0.0.5'), "
+        "('Content-Type', 'application/x-www-form-urlencoded')], "
+        "b'username=operator&password=Siemens123')"
+    )
+
+    def test_basic_auth_header_decodes_to_username_and_password(self):
+        cf = _reload_module()
+        parsed = cf._parse_http_request(self.BASIC_ADMIN_ADMIN, 401)
+        assert parsed["username"] == "admin"
+        assert parsed["password"] == "admin"
+        # The raw header survives alongside the decode -- it is the wire
+        # evidence, the decode is our reading of it.
+        assert parsed["http_authorization"] == "Basic YWRtaW46YWRtaW4="
+
+    def test_form_post_decodes_to_username_and_password(self):
+        cf = _reload_module()
+        parsed = cf._parse_http_request(self.FORM_LOGIN_POST, 403)
+        assert parsed["username"] == "operator"
+        assert parsed["password"] == "Siemens123"
+
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            (b"user=root&pass=toor", ("root", "toor")),
+            (b"login=admin&pwd=1234", ("admin", "1234")),
+            (b"username=admin", ("admin", None)),
+            (b"password=admin", (None, "admin")),
+            # Blank password kept as "" -- a documented default on several OT
+            # web UIs, and distinct from "no password field was sent".
+            (b"username=admin&password=", ("admin", "")),
+        ],
+    )
+    def test_form_field_aliases(self, body, expected):
+        cf = _reload_module()
+        raw = f"('/login', [], {body!r})"
+        parsed = cf._parse_http_request(raw, 403)
+        assert (parsed.get("username"), parsed.get("password")) == expected
+
+    def test_url_encoded_form_values_are_decoded(self):
+        cf = _reload_module()
+        raw = "('/login', [], b'username=plant%20op&password=p%40ss+word')"
+        parsed = cf._parse_http_request(raw, 403)
+        assert parsed["username"] == "plant op"
+        assert parsed["password"] == "p@ss word"
+
+    def test_unpadded_basic_token_still_decodes(self):
+        """Hand-rolled stuffing scripts emit unpadded base64; b64decode(
+        validate=True) rejects it outright, so the decode repairs padding."""
+        cf = _reload_module()
+        import base64 as _b64
+
+        token = _b64.b64encode(b"operator:1234").decode().rstrip("=")
+        raw = f"('/hmi/', [('Authorization', 'Basic {token}')], None)"
+        parsed = cf._parse_http_request(raw, 401)
+        assert parsed["username"] == "operator"
+        assert parsed["password"] == "1234"
+
+    def test_password_containing_a_colon_splits_on_the_first_one(self):
+        cf = _reload_module()
+        import base64 as _b64
+
+        token = _b64.b64encode(b"admin:a:b:c").decode()
+        raw = f"('/hmi/', [('Authorization', 'Basic {token}')], None)"
+        parsed = cf._parse_http_request(raw, 401)
+        assert parsed["username"] == "admin"
+        assert parsed["password"] == "a:b:c"
+
+    def test_basic_with_no_colon_is_a_bare_username(self):
+        cf = _reload_module()
+        import base64 as _b64
+
+        token = _b64.b64encode(b"admin").decode()
+        raw = f"('/hmi/', [('Authorization', 'Basic {token}')], None)"
+        parsed = cf._parse_http_request(raw, 401)
+        assert parsed["username"] == "admin"
+        assert "password" not in parsed
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "Bearer eyJhbGciOi",          # not Basic at all
+            "Basic !!!!not-base64!!!!",   # scheme right, payload junk
+            "Basic",                      # no token
+            "Basic    ",                  # whitespace token
+            "",                           # empty header
+        ],
+    )
+    def test_junk_authorization_yields_no_credential(self, header):
+        cf = _reload_module()
+        raw = f"('/hmi/', [('Authorization', {header!r})], None)"
+        parsed = cf._parse_http_request(raw, 401)
+        assert "username" not in parsed
+        assert "password" not in parsed
+
+    def test_non_form_body_yields_no_credential(self):
+        cf = _reload_module()
+        raw = "('/login', [], b'{\"username\": \"admin\"}')"
+        parsed = cf._parse_http_request(raw, 403)
+        assert "username" not in parsed
+        assert "password" not in parsed
+
+    def test_basic_header_wins_over_a_form_body(self):
+        cf = _reload_module()
+        raw = (
+            "('/login', [('Authorization', 'Basic YWRtaW46YWRtaW4=')], "
+            "b'username=decoy&password=decoy')"
+        )
+        parsed = cf._parse_http_request(raw, 403)
+        assert parsed["username"] == "admin"
+        assert parsed["password"] == "admin"
+
+    def test_bot_hit_carries_no_credential_keys(self):
+        """The keys must be ABSENT, not present-and-null: every gate
+        downstream tests presence, so a null would read as an attempt."""
+        cf = _reload_module()
+        raw = "('/index.html', [('User-Agent', 'curl/7.68.0')], None)"
+        parsed = cf._parse_http_request(raw, 200)
+        assert "username" not in parsed
+        assert "password" not in parsed
+
+    def test_overlong_credential_is_capped_and_flagged(self):
+        cf = _reload_module()
+        long_pw = "B" * (cf._MAX_CREDENTIAL_CHARS + 40)
+        raw = f"('/login', [], b'username=admin&password={long_pw}')"
+        parsed = cf._parse_http_request(raw, 403)
+        assert len(parsed["password"]) == cf._MAX_CREDENTIAL_CHARS
+        assert parsed["password_truncated"] is True
+
+    def test_credentials_survive_a_body_longer_than_the_text_cap(self):
+        """The decode runs on the full body, before the 512-char cap -- a
+        padded login POST must not lose the field the step exists to catch."""
+        cf = _reload_module()
+        padding = "x" * (cf._MAX_HTTP_TEXT_CHARS + 100)
+        raw = f"('/login', [], b'junk={padding}&username=admin&password=admin')"
+        parsed = cf._parse_http_request(raw, 403)
+        assert parsed["http_body_truncated"] is True
+        assert parsed["username"] == "admin"
+        assert parsed["password"] == "admin"
+
+    def test_map_record_lifts_credentials_to_the_event_top_level(self):
+        cf = _reload_module()
+        record = {
+            "id": "sess-hmi-1",
+            "data_type": "http",
+            "src_ip": "203.0.113.7",
+            "dst_port": 8800,
+            "method": "GET",
+            "request": self.BASIC_ADMIN_ADMIN,
+            "response": "401",
+        }
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(record)
+
+        assert mapped["username"] == "admin"
+        assert mapped["password"] == "admin"
+        # ...and stay in protocol_data too. Per-exchange is what the MITRE
+        # rules match on; the top level is what IronPot's session row reads.
+        assert mapped["protocol_data"]["username"] == "admin"
+        assert mapped["protocol_data"]["password"] == "admin"
+        assert mapped["dst_port"] == 80
+
+    def test_modbus_record_still_has_no_credentials(self):
+        cf = _reload_module()
+        record = {
+            "id": "sess-modbus-1",
+            "data_type": "modbus",
+            "src_ip": "203.0.113.7",
+            "dst_port": 5020,
+            "request": "b'00010000000601030000000a'",
+        }
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(record)
+
+        assert mapped["username"] is None
+        assert mapped["password"] is None
+        assert "username" not in mapped["protocol_data"]
+
+    def test_payload_key_set_is_still_unchanged(self):
+        """H4 adds no top-level key -- `username`/`password` already existed
+        on the event and were hardcoded None. The two upstream allow-lists
+        drop an unknown key silently, so this stays pinned."""
+        cf = _reload_module()
+        record = {
+            "id": "sess-hmi-2",
+            "data_type": "http",
+            "src_ip": "203.0.113.7",
+            "dst_port": 8800,
+            "method": "POST",
+            "request": self.FORM_LOGIN_POST,
+            "response": "403",
+        }
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(record)
+
+        assert sorted(mapped.keys()) == sorted([
+            "timestamp", "sensor_id", "source_ip", "source_country", "source_asn",
+            "dst_port", "service", "session_id", "username", "password",
+            "source_type", "protocol_data", "parent_session_id",
+        ])
 # ── SNMP / BACnet / EtherNet-IP mapping (Phase 2 step H10) ──────────────────
 
 

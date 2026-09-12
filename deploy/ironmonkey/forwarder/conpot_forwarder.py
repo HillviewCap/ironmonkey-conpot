@@ -18,11 +18,14 @@ Resilience:
 """
 
 import ast
+import base64
+import binascii
 import json
 import os
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -447,12 +450,151 @@ _HTTP_HEADER_FIELDS: dict[str, str] = {
     "user-agent": "http_user_agent",
     "host": "http_host",
     "referer": "http_referer",
-    # Conpot's HTTP template implements no auth challenge, but a
-    # credential-stuffing tool may send Basic auth unprompted anyway -- the
-    # same signal SSH/Telnet capture as `username`/`password`, just carried
-    # in a header instead of a login prompt.
+    # Phase 2 step H4: the persona's http.xml now DOES challenge -- `/hmi/`
+    # answers 401 with `WWW-Authenticate: Basic realm="SIMATIC HMI"` -- so this
+    # header is no longer only the unprompted credential-stuffer's. It is kept
+    # verbatim alongside the decoded `username`/`password` because the raw
+    # header is the wire evidence and the decode is our interpretation of it.
     "authorization": "http_authorization",
 }
+
+
+# ── Credential capture (Phase 2 step H4, SIR-006-05) ─────────────────────────
+#
+# SIR-006-05 asks which sessions attempted default-credential HMI access. It
+# could not be answered at all before this step: nothing on the OT path ever
+# set `username`/`password`, because the persona never asked for credentials.
+# It now asks twice -- 401 Basic on `/hmi/`, 403 form POST on `/login` -- and
+# these decode whichever of the two arrived.
+#
+# The decode is deliberately forgiving. Every input here is attacker-supplied
+# and half of it is malformed on purpose: unpadded base64, a `Basic` token that
+# is not base64 at all, a body that is not form-encoded, a header with no
+# colon after the user-id. Each of those degrades to "no credential on this
+# exchange", never to an exception -- same contract as `_parse_modbus_request`,
+# because one bad record must not drop an event.
+#
+# NOTHING here is logged. The values ride in the event to IronPot and nowhere
+# else; a log line carrying an attacker's password would put it in the
+# sensor's json-file driver, where it is neither wanted nor bounded.
+
+# Credentials are capped harder than the other HTTP text fields. Nothing that
+# is genuinely a user name or a password on an HMI runs to 512 characters, and
+# these two land in their own indexed Postgres columns, not just in JSONB.
+_MAX_CREDENTIAL_CHARS = 128
+
+# Form field names accepted on a login POST. The persona's own start-page form
+# posts `username`/`password`; the aliases cover the shapes other HMI vendors
+# use, which credential-stuffing tooling replays verbatim.
+_FORM_USERNAME_FIELDS = ("username", "user", "login")
+_FORM_PASSWORD_FIELDS = ("password", "pass", "pwd")
+
+
+def _decode_basic_auth(header_value: Any) -> tuple[str | None, str | None]:
+    """`(username, password)` from an `Authorization: Basic <b64>` header.
+
+    Returns `(None, None)` for anything that is not decodable Basic auth --
+    a Bearer token, a truncated header, junk after the scheme.
+
+    Padding is repaired before giving up: `base64.b64decode(validate=True)`
+    rejects an unpadded token outright, and unpadded is exactly what a
+    hand-rolled stuffing script emits.
+
+    RFC 7617 forbids a colon inside the user-id and allows one inside the
+    password, so the split is on the FIRST colon. A value with no colon at all
+    is treated as a bare user name with no password offered, which is what
+    `curl -u admin` (no colon) actually sends.
+    """
+    if not isinstance(header_value, str):
+        return None, None
+    parts = header_value.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "basic":
+        return None, None
+
+    token = parts[1].strip()
+    if not token:
+        return None, None
+    raw: bytes | None = None
+    for candidate in (token, token + "=" * (-len(token) % 4)):
+        try:
+            raw = base64.b64decode(candidate, validate=True)
+            break
+        except (binascii.Error, ValueError):
+            continue
+    if raw is None:
+        return None, None
+
+    text = raw.decode("utf-8", errors="replace")
+    if ":" not in text:
+        return (text or None), None
+    username, _, password = text.partition(":")
+    # An empty password is kept as "" rather than folded to None: a blank
+    # password IS a documented default on several OT web UIs, and `admin:`
+    # is a different observation from a request that offered no password
+    # field at all.
+    return (username or None), password
+
+
+def _decode_form_credentials(body: str | None) -> tuple[str | None, str | None]:
+    """`(username, password)` from an `application/x-www-form-urlencoded` body.
+
+    JSON login bodies are not parsed. The persona serves an HTML form, so a
+    form body is what it provokes; adding a JSON branch would be guessing at
+    a shape this sensor never advertises.
+
+    `keep_blank_values=True` so `password=` survives as `""` for the same
+    reason `_decode_basic_auth` keeps it.
+    """
+    if not body:
+        return None, None
+    try:
+        fields = urllib.parse.parse_qs(body, keep_blank_values=True)
+    except (ValueError, UnicodeDecodeError):
+        return None, None
+
+    def _first(names: tuple[str, ...]) -> str | None:
+        for name in names:
+            values = fields.get(name)
+            if values:
+                return values[0]
+        return None
+
+    return _first(_FORM_USERNAME_FIELDS), _first(_FORM_PASSWORD_FIELDS)
+
+
+def _attach_credentials(
+    parsed: dict[str, Any],
+    authorization: str | None,
+    body: str | None,
+) -> None:
+    """Write `username`/`password` onto `parsed` when the exchange carried one.
+
+    The Basic header wins over the form body when both are somehow present.
+    They address different paths on the persona (`/hmi/` challenges, `/login`
+    posts) so a request carrying both is already anomalous, and the header is
+    the one the device explicitly asked for.
+
+    Absent keys mean "no credential on this exchange" and are left absent, not
+    set to None: every gate downstream -- the allow-lists in IronPot and the
+    STIX session writer, the `credential_attempt` fact the MITRE rules match
+    on -- tests presence, and a present-but-null key would read as an attempt.
+    """
+    username, password = _decode_basic_auth(authorization)
+    if username is None and password is None:
+        username, password = _decode_form_credentials(body)
+
+    if username is not None:
+        parsed["username"] = _cap_credential(username, "username", parsed)
+    if password is not None:
+        parsed["password"] = _cap_credential(password, "password", parsed)
+
+
+def _cap_credential(value: str, field_name: str, parsed: dict[str, Any]) -> str:
+    """`_cap_text` with the tighter credential cap and the same flag convention."""
+    if len(value) > _MAX_CREDENTIAL_CHARS:
+        parsed[f"{field_name}_truncated"] = True
+        return value[:_MAX_CREDENTIAL_CHARS]
+    return value
 
 
 def _cap_text(value: str, field_name: str, parsed: dict[str, Any]) -> str:
@@ -507,6 +649,12 @@ def _parse_http_request(raw: str | None, response: Any) -> dict[str, Any]:
         if query:
             parsed["http_query"] = _cap_text(query, "http_query", parsed)
 
+    # Kept uncapped for the credential decode below. `http_authorization` is
+    # stored capped like every other header, but a Basic token truncated at
+    # 512 characters base64-decodes to garbage, so the decode must see the
+    # value as it arrived.
+    raw_authorization: str | None = None
+
     if isinstance(headers, list):
         for item in headers:
             if not (isinstance(item, (list, tuple)) and len(item) == 2):
@@ -518,16 +666,24 @@ def _parse_http_request(raw: str | None, response: Any) -> dict[str, Any]:
             # First occurrence wins -- a client sending the same header twice
             # should not let the second value silently overwrite the first.
             if field_name and field_name not in parsed:
+                if field_name == "http_authorization":
+                    raw_authorization = value
                 parsed[field_name] = _cap_text(value, field_name, parsed)
 
+    # Decoded once, from the full text, before the 512-character cap. A login
+    # POST whose body ran past the cap would otherwise lose the password field
+    # to truncation -- the one field the whole step exists to capture.
+    body_text: str | None = None
     if isinstance(body, (bytes, bytearray)) and body:
-        parsed["http_body"] = _cap_text(
-            body.decode("utf-8", errors="replace"), "http_body", parsed
-        )
+        body_text = body.decode("utf-8", errors="replace")
         parsed["http_body_length"] = len(body)
     elif isinstance(body, str) and body:
-        parsed["http_body"] = _cap_text(body, "http_body", parsed)
+        body_text = body
         parsed["http_body_length"] = len(body)
+    if body_text is not None:
+        parsed["http_body"] = _cap_text(body_text, "http_body", parsed)
+
+    _attach_credentials(parsed, raw_authorization, body_text)
 
     return parsed
 
@@ -815,8 +971,15 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
         "dst_port": dst_port,
         "service": data_type,
         "session_id": record.get("id"),
-        "username": None,
-        "password": None,
+        # Phase 2 step H4. These mirror what `_attach_credentials` already put
+        # into `protocol_data`, and the duplication is load-bearing rather than
+        # sloppy: `protocol_data` is per-exchange (it is what the MITRE rules
+        # match on and what the analyst sees rendered for THIS PDU), while the
+        # top-level pair is the event-level field IronPot's IT branch and its
+        # MISP comment already read. Still None for every non-HTTP OT protocol
+        # -- Modbus, S7comm and IEC-104 carry no credential.
+        "username": protocol_data.get("username"),
+        "password": protocol_data.get("password"),
         "source_type": "ot",
         "protocol_data": protocol_data,
         "parent_session_id": parent_session_id,
