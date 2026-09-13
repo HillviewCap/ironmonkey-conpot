@@ -1,0 +1,74 @@
+<!--
+  IEC 60870-5-104 — the telecontrol link from the compressor station to the
+  gas control centre, carried by the unit controller's TIM 1531 IRC module
+  (the same asset as the S7comm identity; a TIM is a module of the CPU, not
+  another box, so the forwarder maps both services onto one x-ics-asset).
+
+  XSD shape (conpot/protocols/IEC104/IEC104.xsd):
+    - <device_info> children are lowercase (vendor_name, product_code) —
+      this differs from modbus.xsd, which uses CamelCase.
+    - <register name="..."> is the IOA in structured 16_8 form
+      (0..65535_0..255) per DeviceDataController.py:42, NOT a label. The
+      human-readable name is the databus key in <value> and the comment.
+    - The IEC104 root element accepts only enabled/host/port. Timing
+      parameters are databus-seeded in template.xml.
+
+  ASDU types served:
+    1  M_SP_NA_1  SinglePoint                  — unit run status, ESD health
+    3  M_DP_NA_1  DoublePoint                  — suction/discharge valves
+    13 M_ME_NC_1  MeasuredValueFloatingPoint   — pressure, flow, vibration
+    30 M_SP_TB_1  SinglePoint with CP56Time2a  — station alarms
+-->
+<IEC104 enabled="True" host="0.0.0.0" port="2404">
+    <device_info>
+        <vendor_name>Siemens AG</vendor_name>
+        <product_code>TIM 1531 IRC</product_code>
+    </device_info>
+    <categories>
+        <!-- M_SP_NA_1 — compressor unit run status and ESD health -->
+        <category name="SinglePoint" id="1">
+            <register name="41_10">  <!-- unit 1 running -->
+                <value>unit_1_running</value>
+            </register>
+            <register name="41_11">  <!-- unit 2 running -->
+                <value>unit_2_running</value>
+            </register>
+            <register name="41_12">  <!-- station ESD loop healthy -->
+                <value>station_esd_healthy</value>
+            </register>
+        </category>
+
+        <!-- M_DP_NA_1 — station valve double-point states -->
+        <category name="DoublePoint" id="3">
+            <register name="39_20">  <!-- suction valve state -->
+                <value>suction_valve_state</value>
+            </register>
+            <register name="39_21">  <!-- discharge valve state -->
+                <value>discharge_valve_state</value>
+            </register>
+        </category>
+
+        <!-- M_ME_NC_1 — line pressure, gas flow, unit vibration -->
+        <category name="MeasuredValueFloatingPoint" id="13">
+            <register name="45_30">  <!-- line pressure, bar -->
+                <value>line_pressure_bar</value>
+            </register>
+            <register name="45_31">  <!-- gas flow, e3m3/d -->
+                <value>gas_flow_e3m3d</value>
+            </register>
+            <register name="45_32">  <!-- unit 1 vibration, mm/s -->
+                <value>unit_1_vibration_mms</value>
+            </register>
+        </category>
+
+        <!-- M_SP_TB_1 — station alarms with CP56Time2a timestamp -->
+        <category name="SinglePointWithCP56Time2a" id="30">
+            <register name="50_40">  <!-- high discharge pressure -->
+                <value>alarm_high_discharge</value>
+            </register>
+            <register name="50_41">  <!-- building gas detection -->
+                <value>alarm_gas_detection</value>
+            </register>
+        </category>
+    </categories>
+</IEC104>

@@ -1,0 +1,74 @@
+<!--
+  IEC 60870-5-104 — the telecontrol link from the plant to the raw-water
+  intake pump station, carried by the dosing skid's CP 1243-1 module (the
+  same asset as the S7comm identity; a CP is a module of the CPU, not another
+  box, so the forwarder maps both services onto one x-ics-asset).
+
+  XSD shape (conpot/protocols/IEC104/IEC104.xsd):
+    - <device_info> children are lowercase (vendor_name, product_code) —
+      this differs from modbus.xsd, which uses CamelCase.
+    - <register name="..."> is the IOA in structured 16_8 form
+      (0..65535_0..255) per DeviceDataController.py:42, NOT a label. The
+      human-readable name is the databus key in <value> and the comment.
+    - The IEC104 root element accepts only enabled/host/port. Timing
+      parameters are databus-seeded in template.xml.
+
+  ASDU types served:
+    1  M_SP_NA_1  SinglePoint                  — intake pumps, backwash valve
+    3  M_DP_NA_1  DoublePoint                  — filter inlet, chem isolation
+    13 M_ME_NC_1  MeasuredValueFloatingPoint   — level, residual, turbidity
+    30 M_SP_TB_1  SinglePoint with CP56Time2a  — water-quality alarms
+-->
+<IEC104 enabled="True" host="0.0.0.0" port="2404">
+    <device_info>
+        <vendor_name>Siemens AG</vendor_name>
+        <product_code>CP 1243-1</product_code>
+    </device_info>
+    <categories>
+        <!-- M_SP_NA_1 — intake pump and backwash valve status -->
+        <category name="SinglePoint" id="1">
+            <register name="21_10">  <!-- intake pump 1 running -->
+                <value>intake_pump_1_run</value>
+            </register>
+            <register name="21_11">  <!-- intake pump 2 running -->
+                <value>intake_pump_2_run</value>
+            </register>
+            <register name="21_12">  <!-- backwash valve open -->
+                <value>backwash_valve_open</value>
+            </register>
+        </category>
+
+        <!-- M_DP_NA_1 — valve double-point states -->
+        <category name="DoublePoint" id="3">
+            <register name="19_20">  <!-- filter inlet valve state -->
+                <value>filter_inlet_valve_state</value>
+            </register>
+            <register name="19_21">  <!-- chemical feed isolation state -->
+                <value>chem_feed_isolation_state</value>
+            </register>
+        </category>
+
+        <!-- M_ME_NC_1 — level, chlorine residual, raw turbidity -->
+        <category name="MeasuredValueFloatingPoint" id="13">
+            <register name="25_30">  <!-- clearwell level, m -->
+                <value>clearwell_level_m</value>
+            </register>
+            <register name="25_31">  <!-- chlorine residual, ppm -->
+                <value>cl2_residual_ppm</value>
+            </register>
+            <register name="25_32">  <!-- raw water turbidity, NTU -->
+                <value>raw_turbidity_ntu</value>
+            </register>
+        </category>
+
+        <!-- M_SP_TB_1 — water-quality alarms with CP56Time2a timestamp -->
+        <category name="SinglePointWithCP56Time2a" id="30">
+            <register name="30_40">  <!-- low chlorine residual -->
+                <value>alarm_low_cl2_residual</value>
+            </register>
+            <register name="30_41">  <!-- high finished-water turbidity -->
+                <value>alarm_high_turbidity</value>
+            </register>
+        </category>
+    </categories>
+</IEC104>

@@ -1,0 +1,66 @@
+{
+  "_comment": [
+    "IronMonkey persona manifest (Phase 2 step H11). NOT read by Conpot -- the",
+    "0.6.0 loader only looks at template.xml and <protocol>/<protocol>.xml, so",
+    "this directory is invisible to it. It is read by the Conpot forwarder",
+    "(deploy/ironmonkey/forwarder/conpot_forwarder.py) to decide WHICH emulated",
+    "device an attacker reached.",
+    "",
+    "asset_type/vendor/model seed the uuid5 of the x-ics-asset node IronPot",
+    "writes, so a wrong entry here does not just mislabel a row -- it merges",
+    "two devices into one graph identity, or splits one into two.",
+    "",
+    "Roster for this persona (see template.xml for the full rationale):",
+    "  MicroLogix 1400   modbus, enip, http   -- the plant PLC",
+    "  S7-1200 + CP1243  s7comm, iec104, snmp -- chemical dosing skid and the",
+    "                                            telecontrol link to the intake",
+    "  NAE5510           bacnet               -- pump-house building controller",
+    "",
+    "The S7-1200 and its CP 1243-1 are ONE asset on purpose: a CP is a module",
+    "of the CPU, not another box, so s7comm and iec104 carry the same identity",
+    "and collapse to a single x-ics-asset.",
+    "",
+    "`services` keys are the forwarder's own data_type values, not port names.",
+    "`default` covers every service with no entry of its own; here that is the",
+    "plant PLC, because it is the device most sessions land on."
+  ],
+  "schema_version": 1,
+  "persona": "water-utility",
+  "label": "Municipal drinking-water treatment plant, filtration and chemical dosing",
+  "sector": "water_wastewater",
+  "site_tag": "WTP-01",
+  "assets": {
+    "default": {
+      "asset_type": "plc",
+      "vendor": "Allen-Bradley",
+      "model": "MicroLogix 1400 1766-L32BWA"
+    },
+    "services": {
+      "s7comm": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "SIMATIC S7-1200 CPU 1214C"
+      },
+      "iec104": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "SIMATIC S7-1200 CPU 1214C"
+      },
+      "iec-104": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "SIMATIC S7-1200 CPU 1214C"
+      },
+      "snmp": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "SIMATIC S7-1200 CPU 1214C"
+      },
+      "bacnet": {
+        "asset_type": "plc",
+        "vendor": "Johnson Controls",
+        "model": "NAE5510"
+      }
+    }
+  }
+}

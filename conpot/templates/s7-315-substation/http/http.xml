@@ -117,8 +117,38 @@
         </node>
     </htdocs>
 
+    <!-- ====================================================================
+         Status codes (step H11).
+
+         A code declared here needs a matching `http/statuscodes/<code>.status`
+         file beside `htdocs/`: `load_status` (command_responder.py:266-276)
+         opens `<docpath>/statuscodes/<code>.status`, and `docpath` is
+         `<template>/http`. Until H11 this persona shipped the XML block and
+         none of the files, so every request for a path with no htdocs node
+         logged `FileNotFoundError .../http/statuscodes/404.status` and
+         answered with a zero-length body — on an internet-exposed sensor
+         that is one traceback per scanner probe and a content-free reply to
+         the single most common thing a scanner does.
+
+         403 and 503 are declared and shipped even though nothing routes to
+         them today: 403 is reachable only through `send_error`, 503 only
+         through the proxy fallback. A device that answers 404 with a branded
+         page and 503 with nothing is odder than one that answers both.
+
+         Two upstream limits, worth knowing before trying to fix them here:
+         `<entity name="Content-Type">` under `<status>` is read by no code
+         path in Conpot 0.6.0, and http.xsd gives `<status>` no `<headers>`
+         child at all — so a status response carries the one global header
+         (Date) plus Content-Length, and the persona's Server banner cannot be
+         attached to it from the template. Both belong to the HTTP responder,
+         not to this file.
+         ==================================================================== -->
     <statuscodes>
         <status name="400">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="403">
             <tarpit>0</tarpit>
             <entity name="Content-Type">text/html</entity>
         </status>
@@ -127,6 +157,10 @@
             <entity name="Content-Type">text/html</entity>
         </status>
         <status name="501">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="503">
             <tarpit>0</tarpit>
             <entity name="Content-Type">text/html</entity>
         </status>

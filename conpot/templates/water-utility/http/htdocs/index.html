@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MicroLogix 1400 &ndash; Plant Overview</title>
+  <style>
+    body { background: #101418; color: #eee; font-family: Arial, sans-serif; margin: 0; }
+    .header { background: #0b3d2e; padding: 10px 20px; display: flex; align-items: center; }
+    .header h1 { color: #fff; font-size: 18px; margin: 0; }
+    .logo { color: #7ad1a6; font-weight: bold; font-size: 20px; margin-right: 15px; }
+    .container { max-width: 420px; margin: 70px auto; background: #1b2228; padding: 30px; border-radius: 4px; border-top: 3px solid #0b3d2e; }
+    h2 { color: #b6e3cd; font-size: 16px; margin-top: 0; }
+    label { display: block; margin-top: 12px; font-size: 13px; color: #bbb; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 8px; margin-top: 4px; background: #101418;
+      border: 1px solid #2e4a3e; color: #fff; border-radius: 3px; box-sizing: border-box;
+    }
+    input[type=submit] {
+      margin-top: 20px; width: 100%; padding: 10px; background: #0b3d2e;
+      color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 14px;
+    }
+    input[type=submit]:hover { background: #12573f; }
+    .footer { margin-top: 20px; font-size: 11px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">Allen-Bradley</span>
+    <h1>MicroLogix 1400 &mdash; Water Treatment Plant 01</h1>
+  </div>
+  <div class="container">
+    <h2>Operator Sign In</h2>
+    <form method="POST" action="/login">
+      <label for="user">User name</label>
+      <input type="text" id="user" name="username" autocomplete="off" placeholder="operator">
+      <label for="pass">Password</label>
+      <input type="password" id="pass" name="password">
+      <input type="submit" value="Sign in">
+    </form>
+    <div class="footer">WTP-01 &bull; 1766-L32BWA &bull; FRN 21.003</div>
+  </div>
+</body>
+</html>

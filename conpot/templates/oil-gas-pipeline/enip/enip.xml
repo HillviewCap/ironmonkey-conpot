@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EtherNet/IP for the `oil-gas-pipeline` persona (step H11). Bound on 44818,
+  TCP and UDP.
+
+  Persona rationale. EtherNet/IP on a Siemens PLC would be wrong, and
+  Decision 18 asks for the protocol anyway because attacker tooling scans
+  44818 regardless of what the device turns out to be and SIR-006-05 counts
+  protocol reach. The resolution is the same one the substation persona uses:
+  make it a SEPARATE device. A 1734-AENTR is a plain POINT I/O EtherNet/IP
+  adapter, the kind of single-purpose third-party box that carries auxiliary
+  station I/O — ESD loop monitoring, skid temperatures — on a brownfield
+  compressor station. It is not a controller and it does not contradict the
+  Siemens story.
+
+  Mode. A real device answers explicit messaging on 44818/tcp AND ListIdentity
+  discovery on 44818/udp, and the UDP half is what a scanner sends first
+  (nmap's enip-info). Serving only TCP is itself a tell.
+
+  Port 2222/udp is deliberately NOT served. It carries CIP class-1 implicit
+  I/O, which Conpot cannot emulate at all; an open port that completes nothing
+  is a stronger negative signal than a closed one.
+
+  OPSEC. EnipServer.apply_identity feeds <device_info> to cpppo, so these
+  fields are load-bearing rather than decorative: a template that leaves them
+  at cpppo's built-in Rockwell 1756-L61/B LOGIX5561 (vendor 1, product code
+  0x36, revision 0x0B14, serial 0x006C061A, status 0x3160) advertises a
+  Conpot. Nothing here repeats one, and nothing repeats the substation
+  persona's values either — two sensors answering with the same serial would
+  correlate the fleet in one scan.
+
+  StatusWord 0x0074 reads as configured (bit 2) with at least one connection
+  established but none in run mode (extended status 7) — an I/O adapter that
+  is online and owned, which is what an adapter looks like when the controller
+  that owns it is idling.
+
+  These are plausible values for the product, not values captured from a real
+  1734-AENTR: the product code, revision, serial and status word are ours.
+-->
+<enip enabled="True" host="0.0.0.0" port="44818">
+    <device_info>
+        <VendorId>1</VendorId>
+        <ProductName>1734-AENTR/C</ProductName>
+        <!-- CIP device type 0x0C, Communications Adapter. -->
+        <DeviceType>12</DeviceType>
+        <SerialNumber>47105562</SerialNumber>
+        <!-- major<<8 | minor -> 0x050E, revision 5.14 -->
+        <ProductRevision>1294</ProductRevision>
+        <ProductCode>168</ProductCode>
+        <StatusWord>0x0074</StatusWord>
+    </device_info>
+
+    <mode>tcp,udp</mode>
+    <latency>0.1</latency>
+    <timeout>20</timeout>
+
+    <!-- Auxiliary station I/O the adapter carries. Addresses are in the
+         vendor-specific class range (0x64+) rather than upstream Conpot's
+         @22/1/x, which is another default worth not repeating. -->
+    <tags>
+        <tag name="STN_ESD_LOOP_OK">
+            <type>SINT</type>
+            <size>1</size>
+            <value>1</value>
+            <addr>100/1/1</addr>
+        </tag>
+        <tag name="AUX_SKID_TEMP">
+            <type>REAL</type>
+            <size>4</size>
+            <value>31.2</value>
+            <addr>100/1/2</addr>
+        </tag>
+        <tag name="IO_RACK_ID">
+            <type>SSTRING</type>
+            <size>16</size>
+            <value>CS-07-RACK-B</value>
+            <addr>100/1/3</addr>
+        </tag>
+    </tags>
+</enip>

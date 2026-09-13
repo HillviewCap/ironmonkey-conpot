@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SIMATIC S7-1500 &ndash; Authentication Required</title>
+  <style>
+    body { background: #14120f; color: #eee; font-family: Arial, sans-serif; margin: 0; }
+    .header { background: #5a3b12; padding: 10px 20px; display: flex; align-items: center; }
+    .header h1 { color: #fff; font-size: 16px; margin: 0; }
+    .logo { color: #e0a34a; font-weight: bold; font-size: 20px; margin-right: 15px; }
+    .container { max-width: 380px; margin: 70px auto; background: #221d17; padding: 26px; border-radius: 4px; border-top: 3px solid #5a3b12; }
+    h2 { color: #f0cf9a; font-size: 15px; margin-top: 0; }
+    p.note { font-size: 12px; color: #a8967c; margin: 0 0 14px 0; }
+    label { display: block; margin-top: 10px; font-size: 13px; color: #bbb; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 8px; margin-top: 4px; background: #14120f;
+      border: 1px solid #4a3c27; color: #fff; border-radius: 3px; box-sizing: border-box;
+    }
+    input[type=submit] {
+      margin-top: 18px; width: 100%; padding: 9px; background: #5a3b12;
+      color: #fff; border: none; border-radius: 3px; cursor: pointer; font-size: 14px;
+    }
+    input[type=submit]:hover { background: #7a5118; }
+    .footer { margin-top: 18px; font-size: 11px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">SIEMENS</span>
+    <h1>SIMATIC S7-1500 &mdash; Station Diagnostics</h1>
+  </div>
+  <div class="container">
+    <h2>Authentication Required</h2>
+    <p class="note">Diagnostics access is restricted to configured web-server users.</p>
+    <form method="POST" action="/login">
+      <label for="user">User name</label>
+      <input type="text" id="user" name="username" autocomplete="off">
+      <label for="pass">Password</label>
+      <input type="password" id="pass" name="password">
+      <input type="submit" value="Log in">
+    </form>
+    <div class="footer">CS-07 &bull; CPU 1516-3 PN/DP &bull; V2.9</div>
+  </div>
+</body>
+</html>

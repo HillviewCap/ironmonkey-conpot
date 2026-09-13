@@ -1,0 +1,46 @@
+<!--
+  Modbus/TCP — the custody-transfer gas flow computer (Emerson ROC809).
+
+  A flow computer publishes its run data over Modbus; that is the ordinary way
+  a station SCADA host and a third-party measurement auditor both read it. It
+  is a different box from the compressor unit controller, which is why the
+  identity here is Emerson and not Siemens.
+
+  Loader gotcha, same as every other persona: the block `name` attribute IS
+  the databus key (modbus_block_databus_mediator.py:8-15). The `<content>`
+  child exists for XSD compliance and is ignored. device_info element tags are
+  CamelCase per conpot/protocols/modbus/modbus.xsd.
+-->
+<modbus enabled="True" host="0.0.0.0" port="5020">
+    <device_info>
+        <VendorName>Emerson Process Management</VendorName>
+        <ProductCode>ROC809</ProductCode>
+        <MajorMinorRevision>V3.85</MajorMinorRevision>
+    </device_info>
+    <mode>serial</mode>
+    <delay>100</delay>
+    <slaves>
+        <slave id="1">
+            <blocks>
+                <!-- 10 measurement registers: line pressure and temperature,
+                     flow rate, orifice differential pressure, unit suction
+                     and discharge pressure, unit speed, accumulated volume
+                     (hi/lo), station status word. -->
+                <block name="hr_station_block">
+                    <type>HOLDING_REGISTERS</type>
+                    <starting_address>0</starting_address>
+                    <size>10</size>
+                    <content>hr_station_block</content>
+                </block>
+                <!-- 16 coils: unit permissives, blowdown, station ESD,
+                     recycle valve. All-zero; see the comment on the key. -->
+                <block name="coil_block">
+                    <type>COILS</type>
+                    <starting_address>0</starting_address>
+                    <size>16</size>
+                    <content>coil_block</content>
+                </block>
+            </blocks>
+        </slave>
+    </slaves>
+</modbus>

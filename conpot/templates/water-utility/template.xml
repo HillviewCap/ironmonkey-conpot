@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IronMonkey `water-utility` persona (Phase 2 step H11, Decision 19).
+
+  A municipal drinking-water treatment plant, site tag WTP-01. This is the
+  persona Decision 19 puts on the US Central sensor.
+
+  THREE DEVICES BEHIND ONE ADDRESS, which is the ordinary shape of a plant LAN
+  reached through one NAT'd public address and the shape step H10 already
+  established for the substation persona:
+
+    Allen-Bradley MicroLogix 1400 (1766-L32BWA)  — the plant PLC. Answers
+        Modbus/TCP, EtherNet/IP and its own embedded web server. All three are
+        native to the product; nothing here claims a protocol the device does
+        not speak.
+    Siemens SIMATIC S7-1200 CPU 1214C + CP 1243-1  — the chemical dosing skid
+        and the telecontrol link out to the remote intake pump station.
+        Answers S7comm, IEC 60870-5-104 (the CP 1243-1's telecontrol protocol)
+        and SNMP (the PROFINET interface answers MIB-II natively).
+    Johnson Controls NAE5510  — the pump-house building controller. Answers
+        BACnet/IP and nothing else.
+
+  A mixed Rockwell/Siemens plant is the common case in municipal water, not
+  the strange one: the process line and the chemical skid are usually
+  different procurements a decade apart.
+
+  Protocol/port set is IDENTICAL to the substation persona, deliberately. The
+  sensor's published ports and the ufw rules in sensor-bootstrap.sh are
+  fleet-wide, so a persona that served a different set would need a firewall
+  change per sensor and would make `ufw status` stop describing the exposure.
+  What differs between personas is identity and content, not reach.
+
+  OPSEC: zero upstream-Conpot default seed strings. Model numbers and serials
+  are plausible values for the products named, not values captured from real
+  devices — the same standard the substation persona's ENIP block states. The
+  `as` (Automation System) element is deliberately absent: it has no
+  counterpart on real S7 SZL output and is a known Conpot fingerprint.
+
+  sysObjectID is Siemens AG's IANA enterprise arc, because the SNMP responder
+  here is the Siemens CPU. Moving SNMP to the Rockwell side would need that
+  vendor's enterprise number verified against the IANA registry first; an
+  invented arc is a worse tell than a shared one.
+-->
+<core>
+    <template>
+        <entity name="unit">MicroLogix 1400</entity>
+        <entity name="vendor">Allen-Bradley</entity>
+        <entity name="description">Municipal water treatment plant, filtration and chemical dosing</entity>
+        <entity name="protocols">HTTP, MODBUS, s7comm, IEC104, SNMP, BACnet, EtherNet/IP</entity>
+        <entity name="creator">IronMonkey</entity>
+    </template>
+    <databus>
+        <key_value_mappings>
+            <!-- ============================================================
+                 S7 identification (returned in SZL 0x011C / 0x0011
+                 responses). These describe the DOSING SKID CPU, not the
+                 plant PLC — see the device roster above.
+                 ============================================================ -->
+            <key name="SystemName">
+                <value type="value">'WTP-01-DOSING-CPU'</value>
+            </key>
+            <key name="SystemDescription">
+                <value type="value">'Siemens SIMATIC S7-1200 CPU 1214C DC/DC/DC'</value>
+            </key>
+            <key name="PlantIdentifier">
+                <value type="value">'WTP-01'</value>
+            </key>
+            <key name="ModuleType">
+                <value type="value">'CPU 1214C DC/DC/DC'</value>
+            </key>
+            <key name="Module">
+                <value type="value">'6ES7 214-1AG40-0XB0'</value>
+            </key>
+            <key name="SerialNumber">
+                <value type="value">'S C-K2QR8137'</value>
+            </key>
+            <key name="Copyright">
+                <value type="value">'SIMATIC S7-1200 V4.5'</value>
+            </key>
+            <key name="empty">
+                <value type="value">''</value>
+            </key>
+
+            <!-- ============================================================
+                 SNMP identity. Same device as the S7 block above: an S7-1200
+                 PROFINET interface answers MIB-II natively.
+
+                 sysLocation is present and EMPTY, not absent. Plant siting is
+                 part of the OPSEC surface, but a device that returns
+                 noSuchObject for sysLocation while answering sysName and
+                 sysContact is itself odd; unset is the ordinary field state.
+                 ============================================================ -->
+            <key name="sysName">
+                <value type="value">'WTP-01-DOSING-CPU'</value>
+            </key>
+            <key name="sysContact">
+                <value type="value">'scada@wtp-01.local'</value>
+            </key>
+            <key name="sysDescription">
+                <value type="value">'Siemens SIMATIC S7-1200 CPU 1214C DC/DC/DC, chemical dosing skid controller'</value>
+            </key>
+            <key name="sysObjectID">
+                <value type="value">'1.3.6.1.4.1.4196'</value>
+            </key>
+            <key name="sysLocation">
+                <value type="value">''</value>
+            </key>
+            <key name="sysServices">
+                <value type="value">'72'</value>
+            </key>
+            <key name="Uptime">
+                <value type="function">conpot.emulators.misc.uptime.Uptime</value>
+            </key>
+
+            <!-- ============================================================
+                 Modbus holding-register backing — the MicroLogix 1400's
+                 process data. Integer-scaled the way a 16-bit register file
+                 actually carries engineering units; the scale factor is in
+                 the comment beside each key and nowhere in the protocol,
+                 which is exactly the situation a real attacker faces.
+                 ============================================================ -->
+            <key name="hr_raw_water_flow">   <value type="value">1240</value></key>  <!-- 124.0 L/s -->
+            <key name="hr_finished_flow">    <value type="value">1187</value></key>  <!-- 118.7 L/s -->
+            <key name="hr_clearwell_level">  <value type="value">742</value></key>   <!-- 74.2 % -->
+            <key name="hr_filter_dp">        <value type="value">183</value></key>   <!-- 18.3 kPa -->
+            <key name="hr_cl2_residual">     <value type="value">112</value></key>   <!-- 1.12 ppm -->
+            <key name="hr_ph">               <value type="value">731</value></key>   <!-- pH 7.31 -->
+            <key name="hr_turbidity">        <value type="value">8</value></key>     <!-- 0.08 NTU -->
+            <key name="hr_pump_1_speed">     <value type="value">615</value></key>   <!-- 61.5 % -->
+            <key name="hr_pump_2_speed">     <value type="value">0</value></key>     <!-- stopped -->
+            <key name="hr_plant_status">     <value type="value">1</value></key>     <!-- 1=Running -->
+
+            <!-- List-backed databus key consumed by modbus/modbus.xml's
+                 HoldingRegisters block. Conpot 0.6.0 modbus block backing
+                 expects a single databus key whose value is a list whose
+                 length matches the block <size>. (conpot/protocols/modbus/
+                 modbus.xsd + slave_block.py.) -->
+            <key name="hr_water_block">
+                <value type="value">[1240, 1187, 742, 183, 112, 731, 8, 615, 0, 1]</value>
+            </key>
+
+            <!-- 16 coils. A running plant does NOT read back all-zero: duty
+                 pump running, its discharge valve open, chemical feed
+                 enabled. An attacker who reads coils before writing one is
+                 the case the T0855 rules exist for, and an all-zero plant
+                 gives them nothing to reason about. -->
+            <key name="coil_block">
+                <value type="value">[1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]</value>
+            </key>
+
+            <!-- ============================================================
+                 IEC-104 register backing. One databus key per register
+                 referenced in IEC104/IEC104.xml. These belong to the CP
+                 1243-1 telecontrol link to the raw-water intake.
+                 ============================================================ -->
+
+            <!-- SinglePoint (ASDU type 1) -->
+            <key name="intake_pump_1_run">       <value type="value">1</value></key>
+            <key name="intake_pump_2_run">       <value type="value">0</value></key>
+            <key name="backwash_valve_open">     <value type="value">0</value></key>
+
+            <!-- DoublePoint (ASDU type 3) — 0=intermediate, 1=off, 2=on,
+                 3=fault -->
+            <key name="filter_inlet_valve_state">  <value type="value">2</value></key>
+            <key name="chem_feed_isolation_state"> <value type="value">2</value></key>
+
+            <!-- MeasuredValueFloatingPoint (ASDU type 13) -->
+            <key name="clearwell_level_m">       <value type="value">4.31</value></key>
+            <key name="cl2_residual_ppm">        <value type="value">1.12</value></key>
+            <key name="raw_turbidity_ntu">       <value type="value">2.74</value></key>
+
+            <!-- SinglePointWithCP56Time2a (ASDU type 30) — alarms -->
+            <key name="alarm_low_cl2_residual">  <value type="value">0</value></key>
+            <key name="alarm_high_turbidity">    <value type="value">0</value></key>
+
+            <!-- ============================================================
+                 IEC-104 protocol parameters. Read by IEC104_server.py /
+                 IEC104.py from the DATABUS, not from IEC104.xml — Conpot
+                 0.6.0's IEC104.xsd does not allow them as XML elements.
+                 Values per IEC 60870-5-104 section 12 defaults.
+                 ============================================================ -->
+            <key name="CommonAddress">  <value type="value">"0x0001"</value></key>
+            <key name="MaxFrameSize">   <value type="value">254</value></key>
+            <key name="T_0">            <value type="value">30</value></key>
+            <key name="T_1">            <value type="value">15</value></key>
+            <key name="T_2">            <value type="value">10</value></key>
+            <key name="T_3">            <value type="value">20</value></key>
+            <key name="k">              <value type="value">12</value></key>
+            <key name="w">              <value type="value">8</value></key>
+        </key_value_mappings>
+    </databus>
+</core>

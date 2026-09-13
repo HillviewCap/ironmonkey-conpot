@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EtherNet/IP for the `water-utility` persona (step H11). Bound on 44818, TCP
+  and UDP.
+
+  Unlike the substation persona — where EtherNet/IP had to be a separate
+  Rockwell box because a Siemens S7 does not speak it — here it belongs to
+  the plant PLC itself. A MicroLogix 1400 is an EtherNet/IP device; explicit
+  messaging on 44818/tcp and ListIdentity on 44818/udp are both native, so the
+  identity below and the Modbus/HTTP identity are one device and the forwarder
+  maps all three onto one x-ics-asset.
+
+  Mode. A real device answers explicit messaging on TCP and ListIdentity
+  discovery on UDP, and the UDP half is what a scanner sends first (nmap's
+  enip-info). Serving only TCP is itself a tell.
+
+  Port 2222/udp is deliberately NOT served. It carries CIP class-1 implicit
+  I/O, which Conpot cannot emulate at all; an open port that completes nothing
+  is a stronger negative signal than a closed one.
+
+  OPSEC. EnipServer.apply_identity feeds <device_info> to cpppo, so these
+  fields are load-bearing rather than decorative: a template that leaves them
+  at cpppo's built-in Rockwell 1756-L61/B LOGIX5561 (vendor 1, product code
+  0x36, revision 0x0B14, serial 0x006C061A, status 0x3160) advertises a
+  Conpot. Nothing here repeats one. DeviceType 14 is CIP's Programmable Logic
+  Controller, not the Communications Adapter (12) the substation's I/O adapter
+  declares. StatusWord 0x0064 reads as configured (bit 2) with at least one
+  connection in run mode (extended status 6) — a controller actually running
+  a plant, which is what the rest of this persona says.
+
+  These are plausible values for the product, not values captured from a real
+  1766-L32BWA: the product code, revision, serial and status word are ours.
+-->
+<enip enabled="True" host="0.0.0.0" port="44818">
+    <device_info>
+        <VendorId>1</VendorId>
+        <ProductName>1766-L32BWA MicroLogix 1400</ProductName>
+        <!-- CIP device type 0x0E, Programmable Logic Controller. -->
+        <DeviceType>14</DeviceType>
+        <SerialNumber>28934711</SerialNumber>
+        <!-- major<<8 | minor -> 0x1503, revision 21.3 -->
+        <ProductRevision>5379</ProductRevision>
+        <ProductCode>185</ProductCode>
+        <StatusWord>0x0064</StatusWord>
+    </device_info>
+
+    <mode>tcp,udp</mode>
+    <latency>0.1</latency>
+    <timeout>20</timeout>
+
+    <!-- Process tags the plant PLC carries. Addresses are in the
+         vendor-specific class range (0x64+) rather than upstream Conpot's
+         @22/1/x, which is another default worth not repeating. -->
+    <tags>
+        <tag name="CLEARWELL_LEVEL_PCT">
+            <type>REAL</type>
+            <size>4</size>
+            <value>74.2</value>
+            <addr>100/1/1</addr>
+        </tag>
+        <tag name="CL2_RESIDUAL_PPM">
+            <type>REAL</type>
+            <size>4</size>
+            <value>1.12</value>
+            <addr>100/1/2</addr>
+        </tag>
+        <tag name="HIGH_LIFT_PUMP_1_RUN">
+            <type>SINT</type>
+            <size>1</size>
+            <value>1</value>
+            <addr>100/1/3</addr>
+        </tag>
+        <tag name="PLANT_TAG">
+            <type>SSTRING</type>
+            <size>16</size>
+            <value>WTP-01-PLC-A</value>
+            <addr>100/1/4</addr>
+        </tag>
+    </tags>
+</enip>

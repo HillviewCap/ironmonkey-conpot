@@ -1,0 +1,134 @@
+<!--
+  HTTP — the plant PLC's embedded web server (Allen-Bradley MicroLogix 1400).
+
+  Same node layout as every IronMonkey persona, because the layout is a
+  contract with the capture pipeline rather than a styling choice:
+
+    /              302 -> /index.html
+    /index.html    the plant overview page, carrying the /login form
+    /hmi/          401 + WWW-Authenticate: Basic, the credential challenge
+    /login         403, the form POST target
+    statuscodes/   400, 403, 404, 501, 503 (step H11)
+
+  What differs per persona is the banner, the realm and the page content.
+  Step H4's capture path keys on the CHALLENGE, not on the wording: the 401
+  is what makes curl -u, a browser or a credential-stuffing tool volunteer an
+  `Authorization: Basic` header on the retry, and the forwarder decodes it.
+
+  XSD constraint: <global>/<headers>/<entity> has maxOccurs=1, so only one
+  global header is possible. Date stays there (update_header_date refreshes
+  it per response) and the Server banner is set per node, where <entity> IS
+  maxOccurs="unbounded".
+
+  No X-Powered-By: it is a WinCC-ism on the substation persona and would be
+  wrong on a Rockwell controller. No /tests/unittest_* nodes — those are
+  upstream-Conpot dev fixtures and a known fingerprint.
+
+  Both credential paths are STATIC. Conpot 0.6.0's `load_entity` reads
+  `<status>` and `<headers>` per node for GET and POST alike
+  (command_responder.py:433-442, reached from do_GET:867 and do_POST:935), so
+  a POST gets the identical rejection a GET does and no protocol-handler patch
+  is needed. That is also the security property that matters: no credential
+  comparison exists anywhere in this path, so there is no pair — default or
+  otherwise — that can produce a success page suggesting a real device is
+  reachable behind the login.
+
+  `Cache-Control: no-store` on both: an intermediary that cached the 401 would
+  break the challenge/retry the capture depends on.
+-->
+<http enabled="True" host="0.0.0.0" port="8800">
+    <global>
+        <config>
+            <entity name="protocol_version">HTTP/1.1</entity>
+            <entity name="update_header_date">true</entity>
+            <entity name="disable_method_head">false</entity>
+            <entity name="disable_method_trace">false</entity>
+            <entity name="disable_method_options">false</entity>
+            <entity name="tarpit">0</entity>
+        </config>
+
+        <headers>
+            <entity name="Date">Sat, 28 Apr 1984 07:30:00 GMT</entity>
+        </headers>
+    </global>
+
+    <htdocs>
+        <node name="/">
+            <status>302</status>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Location">/index.html</entity>
+                <entity name="Server">Rockwell Automation/MicroLogix 1400</entity>
+            </headers>
+        </node>
+        <node name="/index.html">
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Last-Modified">Wed, 06 Sep 1995 11:20:00 GMT</entity>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Server">Rockwell Automation/MicroLogix 1400</entity>
+            </headers>
+        </node>
+        <node name="/index.htm">
+            <alias>/index.html</alias>
+        </node>
+
+        <node name="/hmi/index.html">
+            <status>401</status>
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="WWW-Authenticate">Basic realm="MicroLogix 1400"</entity>
+                <entity name="Cache-Control">no-store</entity>
+                <entity name="Server">Rockwell Automation/MicroLogix 1400</entity>
+            </headers>
+        </node>
+        <node name="/hmi/">
+            <alias>/hmi/index.html</alias>
+        </node>
+        <node name="/hmi">
+            <alias>/hmi/index.html</alias>
+        </node>
+        <node name="/hmi/denied.html">
+            <status>403</status>
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Cache-Control">no-store</entity>
+                <entity name="Server">Rockwell Automation/MicroLogix 1400</entity>
+            </headers>
+        </node>
+        <node name="/login">
+            <alias>/hmi/denied.html</alias>
+        </node>
+    </htdocs>
+
+    <!-- A code declared here needs a matching http/statuscodes/<code>.status
+         file: load_status opens <template>/http/statuscodes/<code>.status and
+         logs a FileNotFoundError per probe if it is absent. See the same
+         block in the substation persona for the two upstream limits (the
+         Content-Type entity is read by no code path, and <status> has no
+         <headers> child in the XSD). -->
+    <statuscodes>
+        <status name="400">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="403">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="404">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="501">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="503">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+    </statuscodes>
+</http>

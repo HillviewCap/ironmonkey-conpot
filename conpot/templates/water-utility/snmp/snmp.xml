@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SNMP agent for the `water-utility` persona (step H11, protocol set from
+  H10). Bound internally on 16100; the host publishes 161/udp. Conpot runs as
+  a non-root user so the internal port must stay above 1024, and snmp.xsd
+  types the port attribute as xs:short so it must stay below 32768.
+
+  The responder is the DOSING SKID CPU (Siemens S7-1200): a PROFINET
+  interface answers MIB-II natively, so nothing here is invented capability.
+  Every value is served out of a databus key template.xml already carries.
+  sysObjectID is Siemens AG's IANA enterprise arc (1.3.6.1.4.1.4196).
+
+  Why not the Rockwell side: a wrong IANA enterprise number is a harder tell
+  than a shared one, and only the Siemens arc is verified in this tree. Moving
+  SNMP to the plant PLC or to a managed switch means verifying that vendor's
+  arc against the IANA registry first.
+
+  OPSEC: nothing here repeats an upstream Conpot default. The default template
+  answers sysDescr "Siemens, SIMATIC, S7-200" and sysLocation "Venus", both of
+  which identify a Conpot instance rather than a PLC.
+
+  sysLocation is deliberately EMPTY rather than absent — plant siting is part
+  of the OPSEC surface, but an unset sysLocation is the ordinary field state
+  while noSuchObject beside a populated sysName is not.
+
+  A SET is accepted with the read community, which is upstream Conpot's
+  behaviour (the VACM grant covers write on 1.3.6.1.2.1) and a realistic
+  misconfiguration for a device of this age. Writes land in the in-memory
+  databus and are lost on restart — see docs/honeypot-ops.md.
+
+  DoS-evasion thresholds are req_per_ip/minute;req_overall/minute; over the
+  threshold the responder answers nothing. Tightest on bulk, because an
+  internet-exposed SNMP agent is a reflection/amplification lever and GETBULK
+  is the arm of it that pays. Same numbers as the substation persona: they are
+  sized against the amplification risk, which does not vary by sector.
+-->
+<snmp enabled="True" host="0.0.0.0" port="16100">
+    <config>
+        <!-- Response delays, in seconds: lower;upper of a uniform draw. -->
+        <entity name="tarpit" command="get">0.1;0.2</entity>
+        <entity name="tarpit" command="set">0.1;0.2</entity>
+        <entity name="tarpit" command="next">0.0;0.1</entity>
+        <entity name="tarpit" command="bulk">0.2;0.4</entity>
+
+        <!-- req_per_ip/minute;req_overall/minute -->
+        <entity name="evasion" command="get">60;180</entity>
+        <entity name="evasion" command="set">20;60</entity>
+        <entity name="evasion" command="next">120;300</entity>
+        <entity name="evasion" command="bulk">12;30</entity>
+    </config>
+    <mibs>
+        <mib name="SNMPv2-MIB">
+            <symbol name="sysDescr">
+                <!-- Every <value> is a databus key, not a literal. Keep
+                     commentary inside <symbol>, never as a direct child of
+                     <mib>: SNMPServer.xml_mib_config iterates the mib
+                     element's children with a plain `for`, which in lxml
+                     yields comment nodes too, and then reads .attrib["name"]
+                     off them. A comment one level up kills the SNMP greenlet
+                     at startup with a bare KeyError. -->
+                <value>sysDescription</value>
+            </symbol>
+            <symbol name="sysObjectID">
+                <value>sysObjectID</value>
+            </symbol>
+            <symbol name="sysUpTime">
+                <value>Uptime</value>
+            </symbol>
+            <symbol name="sysContact">
+                <value>sysContact</value>
+            </symbol>
+            <symbol name="sysName">
+                <value>sysName</value>
+            </symbol>
+            <symbol name="sysLocation">
+                <value>sysLocation</value>
+            </symbol>
+            <symbol name="sysServices">
+                <value>sysServices</value>
+            </symbol>
+        </mib>
+    </mibs>
+</snmp>

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BACnet/IP device for the `water-utility` persona (step H11). Bound on
+  47808/udp inside and out.
+
+  Persona rationale. BACnet is not a process protocol and would be wrong on
+  the plant PLC. It is the right protocol for the other controller a treatment
+  plant has: the one watching the pump house and the chemical room —
+  temperature, humidity, sump pump status and the chlorine-leak detector.
+  Johnson Controls is the dominant building-management vendor in North
+  American municipal facilities and holds ASHRAE BACnet vendor identifier 5,
+  so a Metasys network engine here contradicts nothing in the plant story.
+
+  OPSEC: none of these values is an upstream Conpot default. The default
+  template answers as an Alerton VAV-DD Controller whose device_name is the
+  literal string "SystemName" — Conpot reads device_name as a literal, not as
+  a databus key (BacnetServer.__init__), so that string is a Conpot tell on
+  its own.
+
+  Element ORDER in device_info is load-bearing: BACnetApp
+  .get_objects_and_properties takes the device identifier positionally, as the
+  second child. Keep device_name first and device_identifier second.
+-->
+<bacnet enabled="True" host="0.0.0.0" port="47808">
+    <device_info>
+        <device_name>WTP-01-PUMPHOUSE-BMS</device_name>
+        <device_identifier>2201</device_identifier>
+        <vendor_name>Johnson Controls Inc.</vendor_name>
+        <vendor_identifier>5</vendor_identifier>
+        <max_apdu_length_accepted>1476</max_apdu_length_accepted>
+        <segmentation_supported>segmentedBoth</segmentation_supported>
+        <model_name>NAE5510</model_name>
+        <protocol_version>1</protocol_version>
+    </device_info>
+    <object_list>
+        <!-- Pump house and chemical room environment. present_value is read
+             back through ast.literal_eval, so every value here has to stay a
+             Python literal (a bare number, not "21.5 C"). -->
+        <object name="objectPumphouseTemp">
+            <properties>
+                <object_identifier>21</object_identifier>
+                <object_name>AI_PUMPHOUSE_TEMP</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>21.5</present_value>
+            </properties>
+        </object>
+        <object name="objectChemRoomHumidity">
+            <properties>
+                <object_identifier>22</object_identifier>
+                <object_name>AI_CHEM_ROOM_RH</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>47.0</present_value>
+            </properties>
+        </object>
+        <object name="objectSumpPumpRun">
+            <properties>
+                <object_identifier>23</object_identifier>
+                <object_name>BI_SUMP_PUMP_RUN</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>1</present_value>
+            </properties>
+        </object>
+        <object name="objectCl2LeakAlarm">
+            <properties>
+                <object_identifier>24</object_identifier>
+                <object_name>BI_CL2_LEAK_ALARM</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>0</present_value>
+            </properties>
+        </object>
+    </object_list>
+</bacnet>

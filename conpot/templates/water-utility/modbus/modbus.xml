@@ -1,0 +1,48 @@
+<!--
+  Modbus/TCP — the plant PLC (Allen-Bradley MicroLogix 1400, 1766-L32BWA).
+
+  A MicroLogix 1400 serves Modbus/TCP natively alongside EtherNet/IP, which is
+  why both sit on this device rather than on two.
+
+  Slave id=1 exposes 10 HOLDING_REGISTERS (FC-3) at addr 0..9 backed by the
+  `hr_water_block` databus list key, and 16 COILS (FC-1) at addr 0..15 backed
+  by `coil_block`. Both keys are defined in the root template.xml.
+
+  Loader gotcha, same as every other persona: the block `name` attribute IS
+  the databus key (modbus_block_databus_mediator.py:8-15). The `<content>`
+  child exists for XSD compliance and is ignored. device_info element tags are
+  CamelCase per conpot/protocols/modbus/modbus.xsd.
+-->
+<modbus enabled="True" host="0.0.0.0" port="5020">
+    <device_info>
+        <VendorName>Rockwell Automation/Allen-Bradley</VendorName>
+        <ProductCode>1766-L32BWA</ProductCode>
+        <MajorMinorRevision>V21.003</MajorMinorRevision>
+    </device_info>
+    <mode>serial</mode>
+    <delay>100</delay>
+    <slaves>
+        <slave id="1">
+            <blocks>
+                <!-- 10 process registers: raw and finished water flow,
+                     clearwell level, filter differential pressure, chlorine
+                     residual, pH, turbidity, both high-lift pump speeds,
+                     plant status word. -->
+                <block name="hr_water_block">
+                    <type>HOLDING_REGISTERS</type>
+                    <starting_address>0</starting_address>
+                    <size>10</size>
+                    <content>hr_water_block</content>
+                </block>
+                <!-- 16 coils: pump starts, discharge valves, chemical feed
+                     enables. Not all-zero — see the comment on the key. -->
+                <block name="coil_block">
+                    <type>COILS</type>
+                    <starting_address>0</starting_address>
+                    <size>16</size>
+                    <content>coil_block</content>
+                </block>
+            </blocks>
+        </slave>
+    </slaves>
+</modbus>

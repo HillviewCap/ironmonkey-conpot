@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "IronMonkey persona manifest (Phase 2 step H11). NOT read by Conpot -- the",
+    "0.6.0 loader only looks at template.xml and <protocol>/<protocol>.xml, so",
+    "this directory is invisible to it. It is read by the Conpot forwarder",
+    "(deploy/ironmonkey/forwarder/conpot_forwarder.py), which needs to know",
+    "WHICH emulated device an attacker reached in order to stamp the right",
+    "asset_type/vendor/model on the event.",
+    "",
+    "Why that matters: those three fields seed the uuid5 of the x-ics-asset",
+    "node IronPot writes. One identity for every protocol would tell an",
+    "analyst that a BACnet write landed on the PLC that runs the plant. Before",
+    "H11 the roster was a pair of literals in the forwarder, which was correct",
+    "for exactly one persona; with --template it has to travel with the",
+    "template tree, because the forwarder and the persona ship to the sensor",
+    "together and nothing else pairs them.",
+    "",
+    "asset_type must stay inside the enum in ironmonkey-unified/shared/",
+    "stix-extensions/x-ics-asset.json.",
+    "",
+    "`services` keys are the forwarder's own data_type values (the ones it",
+    "branches on in _map_record), not port names. `default` covers every",
+    "service with no entry of its own."
+  ],
+  "schema_version": 1,
+  "persona": "s7-315-substation",
+  "label": "Transmission substation, S7-315-2 PN/DP with IEC 61850 power metering",
+  "sector": "energy",
+  "site_tag": "SUBSTATION-01",
+  "assets": {
+    "default": {
+      "asset_type": "plc",
+      "vendor": "Siemens",
+      "model": "S7-315-2 PN/DP"
+    },
+    "services": {
+      "bacnet": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "PXC4.E16"
+      },
+      "enip": {
+        "asset_type": "network_device",
+        "vendor": "Allen-Bradley",
+        "model": "1769-AENTR/B"
+      }
+    }
+  }
+}
