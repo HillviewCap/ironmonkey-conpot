@@ -89,8 +89,10 @@ def encode_npdu(apdu_bytes, source=None, expecting_reply=0):
     npdu.npduHopCount = None
     npdu.npduNetMessage = None
     npdu.npduVendorID = None
-    npdu.npduExpectingReply = expecting_reply
-    npdu.npduNetworkPriority = 0
+    # bacpypes' NPCI.encode reads the PCI-level names for these two, not the
+    # npdu* ones, and silently encodes a 0 bit if you set the wrong pair.
+    npdu.pduExpectingReply = expecting_reply
+    npdu.pduNetworkPriority = 0
     out = PDU()
     npdu.encode(out)
     return bytes(out.pduData)
