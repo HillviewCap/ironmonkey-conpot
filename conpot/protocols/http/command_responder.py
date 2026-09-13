@@ -185,7 +185,13 @@ class HTTPServer(http.server.BaseHTTPRequestHandler):
 
     def substitute_template_fields(self, payload):
         if type(payload) == bytes:
-            payload = payload.decode()
+            # `surrogateescape` pairs with the same policy in
+            # `str_to_bytes` (step H10c), so the bytes of an htdocs file go
+            # back out exactly as they came in whatever encoding it was
+            # saved in. A plain `.decode()` raised UnicodeDecodeError on any
+            # file that was not valid UTF-8, in the middle of a response
+            # whose status line had already been sent.
+            payload = payload.decode("utf-8", errors="surrogateescape")
         databus = conpot_core.get_databus()
         pattern = r'<condata\s+source="([^"]+)"\s+key="([^"]+)"\s*/>'
 
@@ -295,8 +301,13 @@ class HTTPServer(http.server.BaseHTTPRequestHandler):
                 headers.append(("Transfer-Encoding", "chunked"))
                 chunks = str(chunked_transfer[0].xpath("./text()")[0])
             else:
-                # Calculate and append a content length header
-                headers.append(("Content-Length", payload.__len__()))
+                # Calculate and append a content length header, measured on
+                # the ENCODED bytes rather than the character count (step
+                # H10c). `substitute_template_fields` returns a str and
+                # `do_GET` writes `str_to_bytes(payload)`, so a page with one
+                # non-ASCII character is longer on the wire than in
+                # characters and a short Content-Length truncates it.
+                headers.append(("Content-Length", len(str_to_bytes(payload))))
                 chunks = "0"
 
             return status, headers, trailers, payload, chunks
@@ -486,8 +497,13 @@ class HTTPServer(http.server.BaseHTTPRequestHandler):
                 headers.append(("Transfer-Encoding", "chunked"))
                 chunks = str(chunked_transfer[0].xpath("./text()")[0])
             else:
-                # Calculate and append a content length header
-                headers.append(("Content-Length", payload.__len__()))
+                # Calculate and append a content length header, measured on
+                # the ENCODED bytes rather than the character count (step
+                # H10c). `substitute_template_fields` returns a str and
+                # `do_GET` writes `str_to_bytes(payload)`, so a page with one
+                # non-ASCII character is longer on the wire than in
+                # characters and a short Content-Length truncates it.
+                headers.append(("Content-Length", len(str_to_bytes(payload))))
                 chunks = "0"
 
             return status, headers, trailers, payload, chunks
