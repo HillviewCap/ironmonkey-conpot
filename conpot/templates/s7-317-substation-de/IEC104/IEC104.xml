@@ -1,0 +1,73 @@
+<!--
+  IEC 60870-5-104 - Fernwirkkopplung of the UW-OST S7-317 (DACH substation
+  persona, step H13). IEC-104 is the ordinary telecontrol protocol on a
+  German Umspannwerk, far more so than in North America, so this persona
+  keeps it and leans on it.
+
+  XSD shape (conpot/protocols/IEC104/IEC104.xsd): <device_info> children are
+  lowercase; register `name` is the IOA in structured 16_8 form; <value> is a
+  databus key NAME. Timing parameters and the common address live in root
+  template.xml (the XSD does not allow them here).
+
+  IOAs and values are re-rolled relative to the base persona so an
+  interrogation transcript differs.
+
+  ASDU types covered:
+    1  M_SP_NA_1  - SinglePoint                       - Leistungsschalter / Trafo
+    3  M_DP_NA_1  - DoublePoint                       - Trenner
+    13 M_ME_NC_1  - MeasuredValueFloatingPoint        - Spannung / Strom / Temp
+    30 M_SP_TB_1  - SinglePoint with CP56Time2a       - Meldungen
+-->
+<IEC104 enabled="True" host="0.0.0.0" port="2404">
+    <device_info>
+        <vendor_name>Siemens AG</vendor_name>
+        <product_code>S7-317-2EK14</product_code>
+    </device_info>
+    <categories>
+        <!-- M_SP_NA_1 - breaker / transformer status -->
+        <category name="SinglePoint" id="1">
+            <register name="9_10">  <!-- Sammelschiene 1 Leistungsschalter geschlossen -->
+                <value>ss1_ls_geschlossen</value>
+            </register>
+            <register name="9_11">  <!-- Sammelschiene 2 Leistungsschalter geschlossen -->
+                <value>ss2_ls_geschlossen</value>
+            </register>
+            <register name="9_12">  <!-- Transformator 1 in Betrieb -->
+                <value>trafo_1_in_betrieb</value>
+            </register>
+        </category>
+
+        <!-- M_DP_NA_1 - disconnector double-point state -->
+        <category name="DoublePoint" id="3">
+            <register name="7_20">  <!-- Trenner 1 Stellung -->
+                <value>trenner_1_stellung</value>
+            </register>
+            <register name="7_21">  <!-- Trenner 2 Stellung -->
+                <value>trenner_2_stellung</value>
+            </register>
+        </category>
+
+        <!-- M_ME_NC_1 - short-float telemetry -->
+        <category name="MeasuredValueFloatingPoint" id="13">
+            <register name="15_30">  <!-- Spannung Sammelschiene 1 (kV) -->
+                <value>spannung_ss1_kv</value>
+            </register>
+            <register name="15_31">  <!-- Strom Abzweig 3 (A) -->
+                <value>strom_abzweig_3_a</value>
+            </register>
+            <register name="15_32">  <!-- Transformator 2 Oeltemperatur (C) -->
+                <value>trafo_2_oeltemp_c</value>
+            </register>
+        </category>
+
+        <!-- M_SP_TB_1 - alarms with CP56Time2a timestamp -->
+        <category name="SinglePointWithCP56Time2a" id="30">
+            <register name="21_40">  <!-- Ueberstrom -->
+                <value>alarm_ueberstrom</value>
+            </register>
+            <register name="21_41">  <!-- Unterspannung -->
+                <value>alarm_unterspannung</value>
+            </register>
+        </category>
+    </categories>
+</IEC104>

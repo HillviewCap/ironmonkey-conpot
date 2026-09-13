@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>404 &ndash; Seite nicht gefunden</title>
+  <style>
+    body { background: #14161c; color: #e6e6e6; font-family: Arial, Helvetica, sans-serif; margin: 0; }
+    .header { background: #009999; padding: 9px 18px; display: flex; align-items: center; }
+    .header h1 { color: #fff; font-size: 17px; margin: 0; font-weight: normal; }
+    .logo { color: #fff; font-weight: bold; font-size: 22px; letter-spacing: 1px; margin-right: 16px; }
+    .container { max-width: 400px; margin: 72px auto; background: #1f232b; padding: 28px; border-radius: 3px; border-top: 3px solid #009999; }
+    h2 { color: #7fd6d6; font-size: 15px; margin-top: 0; }
+    p.note { font-size: 12px; color: #9aa; margin: 0 0 14px 0; }
+    p.err { font-size: 13px; color: #ddd; margin: 0 0 14px 0; }
+    p { font-size: 13px; color: #ccc; }
+    label { display: block; margin-top: 11px; font-size: 13px; color: #bbb; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 8px; margin-top: 4px; background: #14161c;
+      border: 1px solid #3a4250; color: #fff; border-radius: 2px; box-sizing: border-box;
+    }
+    input[type=submit] {
+      margin-top: 18px; width: 100%; padding: 9px; background: #009999;
+      color: #fff; border: none; border-radius: 2px; cursor: pointer; font-size: 14px;
+    }
+    input[type=submit]:hover { background: #00b3b3; }
+    .footer { margin-top: 18px; font-size: 11px; color: #667; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">SIEMENS</span>
+    <h1>SIMATIC WinCC Web Navigator</h1>
+  </div>
+  <div class="container">
+    <h2>404 &ndash; Seite nicht gefunden</h2>
+    <p>Die angeforderte Seite existiert auf dieser Runtime nicht.</p>
+    <div class="footer"><condata source="databus" key="sysName" /> &bull; <condata source="databus" key="ModuleType" /></div>
+  </div>
+</body>
+</html>

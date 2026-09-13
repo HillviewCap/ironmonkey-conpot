@@ -40,11 +40,19 @@ import conpot
 PACKAGE_DIR = os.path.dirname(conpot.__file__)
 TEMPLATES_DIR = os.path.join(PACKAGE_DIR, "templates")
 
-# Every persona sensor-deploy.sh --template will accept. Adding a directory
-# here without adding it to `PERSONAS` in
-# ironmonkey-unified/scripts/sensor-deploy.sh makes it undeployable; adding it
-# there without adding it here makes it untested.
-PERSONAS = ("s7-315-substation", "water-utility", "oil-gas-pipeline")
+# Every persona sensor-deploy.sh --template will accept. The deploy script
+# discovers personas by globbing */ironmonkey/persona.json, so a directory
+# added there without being added here is deployable but untested; the
+# unified registry's `personas:` catalogue is the third place that must agree.
+#
+# s7-317-substation-de is the DACH regional VARIANT of s7-315-substation
+# (step H13, Decision 19): same sector, every device identity distinct.
+PERSONAS = (
+    "s7-315-substation",
+    "water-utility",
+    "oil-gas-pipeline",
+    "s7-317-substation-de",
+)
 
 # Protocol -> port bound INSIDE the container. Identical for every persona on
 # purpose: sensors/docker-compose.sensor.yml publishes these, the forwarder's
@@ -443,10 +451,24 @@ class TestSectorPersonas(unittest.TestCase):
             "dams",
             "multiple",
         }
-        sectors = [_manifest(persona)["sector"] for persona in PERSONAS]
-        for sector in sectors:
-            self.assertIn(sector, canonical)
-        self.assertEqual(len(sectors), len(set(sectors)), sectors)
+        manifests = {persona: _manifest(persona) for persona in PERSONAS}
+        for manifest in manifests.values():
+            self.assertIn(manifest["sector"], canonical)
+        # One persona per sector, among BASE personas. A regional variant
+        # (step H13) declares `variant_of` and inherits its base's sector:
+        # it is the same site class in another region, not a second answer
+        # to the same PIR. It must still be distinct on every device
+        # identity, which the forwarder's manifest test enforces.
+        base_sectors = [
+            m["sector"] for m in manifests.values() if not m.get("variant_of")
+        ]
+        self.assertEqual(len(base_sectors), len(set(base_sectors)), base_sectors)
+        for persona, manifest in manifests.items():
+            base = manifest.get("variant_of")
+            if base:
+                self.assertIn(base, manifests, "%s: variant_of unknown persona" % persona)
+                self.assertFalse(manifests[base].get("variant_of"), "variant of a variant")
+                self.assertEqual(manifests[base]["sector"], manifest["sector"], persona)
 
     def test_manifest_assets_are_complete(self):
         """A partial entry is worse than none: IronPot's uuid5 is over the

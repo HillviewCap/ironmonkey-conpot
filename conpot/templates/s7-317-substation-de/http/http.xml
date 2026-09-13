@@ -1,0 +1,119 @@
+<!--
+  HTTP - SCADA HMI login page of the UW-OST DACH substation persona
+  (step H13), fronted by a Siemens CP343-1 Advanced banner. A CP343-1 is the
+  S7-300 family's own Advanced CP, so it is coherent with a CPU 317; the
+  base persona's CP443-1 is an S7-400 part.
+
+  Same node set and the same H4 credential-bait contract as the base persona
+  (/hmi/ answers 401 with a Basic challenge, /login answers 403, no
+  credential comparison exists anywhere). Only the banner, the realm, the
+  dates and the page bodies differ - the realm is test-enforced to be
+  distinct across personas, because two sensors answering with the same
+  realm correlate the fleet on one unauthenticated GET.
+
+  XSD constraint: <global>/<headers>/<entity> has maxOccurs=1, so Server and
+  X-Powered-By are set per node. Date stays global so update_header_date
+  refreshes it live.
+
+  No /tests/unittest_* nodes - upstream-Conpot dev fixtures and a known
+  fingerprint.
+-->
+<http enabled="True" host="0.0.0.0" port="8800">
+    <global>
+        <config>
+            <entity name="protocol_version">HTTP/1.1</entity>
+            <entity name="update_header_date">true</entity>
+            <entity name="disable_method_head">false</entity>
+            <entity name="disable_method_trace">false</entity>
+            <entity name="disable_method_options">false</entity>
+            <entity name="tarpit">0</entity>
+        </config>
+
+        <headers>
+            <entity name="Date">Thu, 14 Nov 2019 06:12:00 GMT</entity>
+        </headers>
+    </global>
+
+    <htdocs>
+        <node name="/">
+            <status>302</status>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Location">/index.html</entity>
+                <entity name="Server">Siemens CP343-1 Advanced V3.0.4</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/index.html">
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Last-Modified">Thu, 14 Nov 2019 06:12:00 GMT</entity>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Server">Siemens CP343-1 Advanced V3.0.4</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/index.htm">
+            <alias>/index.html</alias>
+        </node>
+
+        <!-- Credential bait (step H4, SIR-006-05). See the base persona's
+             http.xml for the full rationale; the contract is identical. -->
+        <node name="/hmi/index.html">
+            <status>401</status>
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="WWW-Authenticate">Basic realm="WinCC Runtime UW-OST"</entity>
+                <entity name="Cache-Control">no-store</entity>
+                <entity name="Server">Siemens CP343-1 Advanced V3.0.4</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/hmi/">
+            <alias>/hmi/index.html</alias>
+        </node>
+        <node name="/hmi">
+            <alias>/hmi/index.html</alias>
+        </node>
+        <node name="/hmi/denied.html">
+            <status>403</status>
+            <tarpit>0</tarpit>
+            <headers>
+                <entity name="Content-Type">text/html</entity>
+                <entity name="Cache-Control">no-store</entity>
+                <entity name="Server">Siemens CP343-1 Advanced V3.0.4</entity>
+                <entity name="X-Powered-By">SIMATIC WinCC</entity>
+            </headers>
+        </node>
+        <node name="/login">
+            <alias>/hmi/denied.html</alias>
+        </node>
+    </htdocs>
+
+    <!-- Status codes (step H11): every code declared here has a matching
+         http/statuscodes/<code>.status file, or load_status answers with a
+         traceback and an empty body. -->
+    <statuscodes>
+        <status name="400">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="403">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="404">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="501">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+        <status name="503">
+            <tarpit>0</tarpit>
+            <entity name="Content-Type">text/html</entity>
+        </status>
+    </statuscodes>
+</http>
