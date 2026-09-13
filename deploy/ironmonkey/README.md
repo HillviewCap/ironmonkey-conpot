@@ -36,20 +36,28 @@ deploy/ironmonkey/
 │   └── .env.example
 └── README.md (this file)
 
-conpot/templates/s7-315-substation/   # ← upstream-style location
+conpot/templates/<persona>/       # ← upstream-style location. Three personas
+                                  #   ship: s7-315-substation (the default),
+                                  #   water-utility, oil-gas-pipeline.
 ├── template.xml                  # root: core/template metadata + databus seeds
+├── ironmonkey/persona.json       # device roster — read by the FORWARDER, not
+│                                 #   by Conpot (step H11)
 ├── modbus/modbus.xml             # Modbus/TCP (FC-3 holding regs, FC-1 coils)
 ├── s7comm/s7comm.xml             # S7Comm SZL 0x011C / 0x0011 identity
 ├── http/
-│   ├── http.xml                  # HTTP config (Server: Siemens CP443-1...)
-│   └── htdocs/
-│       ├── index.html            # SIMATIC WinCC HMI login page
-│       └── hmi/
-│           ├── index.html        # 401 Basic challenge (realm "SIMATIC HMI")
-│           └── denied.html       # 403 sign-in-failed page, aliased from /login
+│   ├── http.xml                  # HTTP config, per-node Server banner
+│   ├── htdocs/
+│   │   ├── index.html            # start page, carries the /login form
+│   │   └── hmi/
+│   │       ├── index.html        # 401 Basic challenge (persona realm)
+│   │       └── denied.html       # 403 sign-in-failed page, aliased from /login
+│   └── statuscodes/              # 400, 403, 404, 501, 503 (step H11)
 ├── IEC104/IEC104.xml             # IEC 60870-5-104 ASDU types 1/3/13/30
-├── snmp/                         # (empty — protocol intentionally not loaded)
-└── ssl/                          # self-signed cert for HTTPS variant
+├── snmp/snmp.xml                 # SNMPv2-MIB system group (step H10)
+├── bacnet/bacnet.xml             # BACnet/IP building controller (step H10)
+├── enip/enip.xml                 # EtherNet/IP identity + tags (step H10)
+└── ssl/                          # substation only: self-signed cert for the
+                                  #   proxy protocol, which no persona serves
 ```
 
 ## Deploy targets
@@ -76,9 +84,35 @@ docker logs ironmonkey-conpot-forwarder --follow
 docker exec ironmonkey-conpot tail -f /var/log/conpot/conpot.json
 ```
 
-## Template
+## Templates: the sector personas (step H11)
 
-`conpot/templates/s7-315-substation/` — Siemens S7-315-2 PN/DP substation persona designed as an INDUSTROYER/CRASHOVERRIDE trap. IEC-104 ASDU types 1 (M_SP_NA_1) / 3 (M_DP_NA_1) / 13 (M_ME_NC_1) / 30 (M_SP_TB_1) are exposed as monitored telemetry; command-type ASDUs (45/46/50/58) trigger via incoming commands and are highest-signal captures.
+A persona is a SITE, not a device: several emulated boxes behind one address, each answering the protocols it actually speaks. All three serve the same seven protocols on the same ports, because the sensor's published ports and its ufw rules are fleet-wide — a persona changes identity and content, not reach.
+
+| Persona | Sector | Site | Devices |
+|---|---|---|---|
+| `s7-315-substation` | `energy` | `SUBSTATION-01` | S7-315-2 PN/DP (modbus, s7comm, IEC-104, snmp, http) · Desigo PXC4.E16 (bacnet) · 1769-AENTR/B (enip) |
+| `water-utility` | `water_wastewater` | `WTP-01` | MicroLogix 1400 (modbus, enip, http) · S7-1200 + CP 1243-1 (s7comm, IEC-104, snmp) · Metasys NAE5510 (bacnet) |
+| `oil-gas-pipeline` | `oil_gas` | `CS-07` | S7-1500 + TIM 1531 IRC (s7comm, IEC-104, snmp, http) · Emerson ROC809 (modbus) · 1734-AENTR (enip) · FX-PCX27 (bacnet) |
+
+`s7-315-substation` is the default and the persona every sensor ran before H11; it is designed as an INDUSTROYER/CRASHOVERRIDE trap. On every persona, IEC-104 ASDU types 1 (M_SP_NA_1) / 3 (M_DP_NA_1) / 13 (M_ME_NC_1) / 30 (M_SP_TB_1) are exposed as monitored telemetry; command-type ASDUs (45/46/50/58) trigger via incoming commands and are the highest-signal captures.
+
+Model numbers and serials are plausible values for the products named, not values captured from real devices. What matters is that they are internally consistent, are not upstream Conpot defaults, and are not repeated across personas — two sensors answering with the same ENIP serial or the same BACnet device instance correlate the fleet in one scan.
+
+Select one with `ironmonkey-unified`'s `scripts/sensor-deploy.sh --template <name>`, which writes `CONPOT_TEMPLATE` into the sensor's `.env`; the compose files here and in `ironmonkey-unified/sensors/` mount the whole `conpot/templates` tree and pass `-t /opt/conpot-templates/${CONPOT_TEMPLATE}`.
+
+### `ironmonkey/persona.json` — the device roster
+
+Conpot never reads this file; its loader only looks at `template.xml` and `<proto>/<proto>.xml`, so the directory is invisible to it. The forwarder reads it to decide which emulated device answered which protocol, because `asset_type`/`vendor`/`model` seed the uuid5 of the `x-ics-asset` node IronPot writes. One identity for every protocol would tell an analyst a BACnet write landed on the PLC that runs the plant; two identities for one device would split its history in half.
+
+Keys under `assets.services` are the forwarder's own `data_type` values — `modbus`, `s7comm`, `iec104`, `iec-104`, `http`, `snmp`, `bacnet`, `enip` — not directory names and not ports. A persona that puts IEC-104 on its own device must map BOTH spellings, since `_map_record` accepts either. `assets.default` covers everything with no entry of its own.
+
+A missing or malformed manifest fails OPEN: the forwarder logs a warning and falls back to the pre-H11 substation roster rather than stopping. An asset label is observability, and observability must not block ingest. `sensor-deploy.sh` refuses to ship a persona without one, so that fallback should only ever be reached by a sensor deployed before H11.
+
+### `http/statuscodes/` is not optional
+
+A code declared in `http.xml` without a matching `<code>.status` file makes `load_status` (`command_responder.py:266-276`) log `FileNotFoundError .../http/statuscodes/404.status` and answer with a zero-length body. The substation persona shipped the XML block and none of the files from 2026-05-26 until step H11, so every scanner probe of a nonexistent path — the single most common request an internet-exposed sensor gets — produced a traceback and a content-free 404.
+
+Two upstream limits, so nobody re-derives them: `<entity name="Content-Type">` under `<status>` is read by no code path in Conpot 0.6.0, and `http.xsd` gives `<status>` no `<headers>` child. A status response therefore carries the one global header (Date) plus Content-Length, and the persona's `Server` banner cannot be attached to it from the template. Fixing that means patching the responder.
 
 ### Template structure
 

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>400 &ndash; Bad request</title>
+  <style>
+    body { background: #14120f; color: #eee; font-family: Arial, sans-serif; margin: 0; }
+    .header { background: #5a3b12; padding: 10px 20px; display: flex; align-items: center; }
+    .header h1 { color: #fff; font-size: 16px; margin: 0; }
+    .logo { color: #e0a34a; font-weight: bold; font-size: 20px; margin-right: 15px; }
+    .container { max-width: 460px; margin: 70px auto; background: #221d17; padding: 26px; border-radius: 4px; border-top: 3px solid #5a3b12; }
+    h2 { color: #f0cf9a; font-size: 15px; margin-top: 0; }
+    p { font-size: 13px; color: #ccc; }
+    .footer { margin-top: 18px; font-size: 11px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">SIEMENS</span>
+    <h1>SIMATIC S7-1500 &mdash; Web Server</h1>
+  </div>
+  <div class="container">
+    <h2>400 &ndash; Bad request</h2>
+    <p>The web server could not interpret the request.</p>
+    <div class="footer"><condata source="databus" key="sysName" /> &bull; <condata source="databus" key="ModuleType" /></div>
+  </div>
+</body>
+</html>

@@ -28,12 +28,15 @@ services:
     container_name: ironmonkey-conpot
     restart: unless-stopped
     volumes:
-      # S7-315 substation template (Conpot 0.6.0 directory-tree form):
-      # root template.xml + modbus/, s7comm/, http/+htdocs/, IEC104/, ssl/.
-      # Mounted read-only so Conpot never writes back into the template tree.
+      # The whole templates tree (Conpot 0.6.0 directory-tree form: root
+      # template.xml + modbus/, s7comm/, IEC104/, snmp/, bacnet/, enip/,
+      # http/{http.xml,htdocs,statuscodes}, and the ironmonkey/persona.json
+      # the forwarder reads). CONPOT_TEMPLATE picks which persona to load --
+      # this is the lab bench, so any of them can be driven here without a
+      # compose edit. Read-only so Conpot never writes back into the tree.
       # See deploy/ironmonkey/README.md "Template structure" for the loader
       # contract.
-      - ../../conpot/templates/s7-315-substation:/opt/conpot-templates/s7-315-substation:ro
+      - ../../conpot/templates:/opt/conpot-templates:ro
       - ./conpot.cfg:/etc/conpot/conpot.cfg:ro
       - conpot-logs:/var/log/conpot
     ports:
@@ -48,7 +51,7 @@ services:
     # enabled via the [json] section of conpot.cfg (mounted above).
     command: >
       -c /etc/conpot/conpot.cfg
-      -t /opt/conpot-templates/s7-315-substation
+      -t /opt/conpot-templates/${CONPOT_TEMPLATE:-s7-315-substation}
       --temp_dir /tmp
 
   conpot-forwarder:
@@ -68,8 +71,17 @@ services:
       # unprivileged process can append failed events without colliding
       # with conpot's UID on the shared conpot-logs volume.
       - forwarder-dead-letter:/var/spool/conpot-forwarder
+      # Step H11: the forwarder reads the persona's device roster from
+      # <template>/ironmonkey/persona.json to decide which emulated device
+      # answered which protocol. Same tree Conpot gets, read-only.
+      - ../../conpot/templates:/opt/conpot-templates:ro
     env_file:
       - ./forwarder/.env
+    environment:
+      # Must match the conpot service's -t argument above, or the roster
+      # describes a different site than the one answering the ports.
+      CONPOT_TEMPLATE: ${CONPOT_TEMPLATE:-s7-315-substation}
+      CONPOT_TEMPLATES_DIR: /opt/conpot-templates
     depends_on:
       - conpot
 

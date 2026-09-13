@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>400 &ndash; Bad request</title>
+  <style>
+    body { background: #101418; color: #eee; font-family: Arial, sans-serif; margin: 0; }
+    .header { background: #0b3d2e; padding: 10px 20px; display: flex; align-items: center; }
+    .header h1 { color: #fff; font-size: 16px; margin: 0; }
+    .logo { color: #7ad1a6; font-weight: bold; font-size: 20px; margin-right: 15px; }
+    .container { max-width: 460px; margin: 70px auto; background: #1b2228; padding: 26px; border-radius: 4px; border-top: 3px solid #0b3d2e; }
+    h2 { color: #b6e3cd; font-size: 15px; margin-top: 0; }
+    p { font-size: 13px; color: #ccc; }
+    .footer { margin-top: 18px; font-size: 11px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">Allen-Bradley</span>
+    <h1>MicroLogix 1400 &mdash; Embedded Web Server</h1>
+  </div>
+  <div class="container">
+    <h2>400 &ndash; Bad request</h2>
+    <p>The controller could not interpret the request.</p>
+    <div class="footer"><condata source="databus" key="sysName" /> &bull; <condata source="databus" key="ModuleType" /></div>
+  </div>
+</body>
+</html>

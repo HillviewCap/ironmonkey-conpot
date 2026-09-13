@@ -49,6 +49,14 @@ CONPOT_LOG = os.environ.get("CONPOT_LOG", "/var/log/conpot/conpot.json")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 POST_MAX_RETRIES = int(os.environ.get("POST_MAX_RETRIES", "3"))
 POST_BACKOFF_SECONDS = float(os.environ.get("POST_BACKOFF_SECONDS", "2"))
+# Phase 2 step H11 -- which Conpot persona this sensor runs, and where its
+# template tree is mounted. The forwarder needs the persona name because the
+# device roster (which emulated box answers which protocol) travels with the
+# template, not with this file. Both defaults keep a pre-H11 sensor working
+# unchanged: the same persona, and an absent mount falls back to the literals
+# in _FALLBACK_ASSETS below.
+CONPOT_TEMPLATE = os.environ.get("CONPOT_TEMPLATE", "s7-315-substation")
+CONPOT_TEMPLATES_DIR = os.environ.get("CONPOT_TEMPLATES_DIR", "/opt/conpot-templates")
 # Where to spool events when IronPot is unreachable after POST_MAX_RETRIES.
 # Lives on a dedicated forwarder-owned volume (`forwarder-dead-letter` ->
 # /var/spool/conpot-forwarder) so the unprivileged forwarder user can append
@@ -801,28 +809,41 @@ def _parse_enip_request(request: Any) -> dict[str, Any]:
     return _map_fields(request, _ENIP_FIELDS)
 
 
-# Which emulated DEVICE the attacker reached. Modbus, S7comm, IEC-104 and the
-# SCADA web UI are all the S7-315 itself, and SNMP is too -- a PN/DP CPU
-# answers SNMP natively. BACnet and EtherNet/IP are not: the substation
-# persona serves them as two other boxes on the same LAN (step H10), a Siemens
-# building-automation station watching the transformer room and a Rockwell
-# Compact I/O adapter carrying auxiliary I/O.
+# Which emulated DEVICE the attacker reached.
+#
+# A persona is a SITE, not a box: several emulated devices behind one address,
+# each answering the protocols it actually speaks. On the substation persona
+# Modbus, S7comm, IEC-104, SNMP and the SCADA web UI are all the S7-315, while
+# BACnet and EtherNet/IP are two other boxes on the same LAN (step H10). On the
+# water-utility persona the split falls in a different place entirely.
 #
 # Getting this wrong is not cosmetic. `asset_type`/`vendor`/`model` seed the
-# uuid5 of the `x-ics-asset` node IronPot writes, so one identity for all
-# three would tell an analyst that a BACnet write landed on the S7 that runs
-# the plant. `asset_type` must stay inside the enum in
+# uuid5 of the `x-ics-asset` node IronPot writes, so one identity for every
+# protocol would tell an analyst that a BACnet write landed on the PLC that
+# runs the plant -- and two identities for one device would split its history
+# in half. `asset_type` must stay inside the enum in
 # ironmonkey-unified/shared/stix-extensions/x-ics-asset.json.
 #
-# H11 (sector personas, --template) makes the persona itself a choice; when it
-# does, this map becomes per-template configuration rather than a literal.
-_DEFAULT_ASSET: dict[str, Any] = {
+# Step H11 makes the persona a per-sensor choice (`sensor-deploy.sh
+# --template`), so the roster moved out of this file and into the template
+# tree, at `<template>/ironmonkey/persona.json`. That is the only place it can
+# live and stay correct: the forwarder image and the template tree are shipped
+# to a sensor by the same deploy, and nothing else pairs a running forwarder
+# with the persona in front of it.
+#
+# The literals below are the pre-H11 substation roster, kept as the fallback.
+# They are used when the template mount is absent or the manifest is
+# unreadable -- fail open, because an asset label is observability and an
+# ingest path must not stop for it. A wrong-but-plausible label on the default
+# persona is recoverable; a forwarder that refuses to forward is a silent
+# sensor.
+_FALLBACK_DEFAULT_ASSET: dict[str, Any] = {
     "asset_type": "plc",
     "vendor": "Siemens",
     "model": "S7-315-2 PN/DP",
 }
 
-_ASSET_BY_SERVICE: dict[str, dict[str, Any]] = {
+_FALLBACK_ASSET_BY_SERVICE: dict[str, dict[str, Any]] = {
     "bacnet": {
         "asset_type": "plc",
         "vendor": "Siemens",
@@ -834,6 +855,115 @@ _ASSET_BY_SERVICE: dict[str, dict[str, Any]] = {
         "model": "1769-AENTR/B",
     },
 }
+
+_ASSET_FIELDS = ("asset_type", "vendor", "model")
+
+
+def _clean_asset(value: Any) -> dict[str, str] | None:
+    """Accept an asset entry only if all three identity fields are present.
+
+    A partial entry is worse than no entry: IronPot's uuid5 is over the triple,
+    so an entry missing `model` would mint a THIRD identity for a device that
+    already has one, rather than falling back to the persona default.
+    """
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for field in _ASSET_FIELDS:
+        item = value.get(field)
+        if not isinstance(item, str) or not item.strip():
+            return None
+        out[field] = item.strip()
+    return out
+
+
+def load_persona_assets(
+    template: str = CONPOT_TEMPLATE,
+    templates_dir: str = CONPOT_TEMPLATES_DIR,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Read the device roster for `template` out of its persona manifest.
+
+    Returns (default_asset, asset_by_service). Every failure -- no mount, no
+    file, bad JSON, a manifest for a different persona, entries with missing
+    fields -- falls back to the pre-H11 substation literals and logs why. The
+    forwarder is on the ingest path; it does not get to refuse to run because a
+    label file is wrong.
+    """
+    path = os.path.join(templates_dir, template, "ironmonkey", "persona.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except FileNotFoundError:
+        log.warning(
+            "persona_manifest_missing",
+            path=path,
+            template=template,
+            detail="using the pre-H11 substation asset roster",
+        )
+        return dict(_FALLBACK_DEFAULT_ASSET), dict(_FALLBACK_ASSET_BY_SERVICE)
+    except Exception as exc:
+        log.warning(
+            "persona_manifest_unreadable",
+            path=path,
+            template=template,
+            error=str(exc),
+            detail="using the pre-H11 substation asset roster",
+        )
+        return dict(_FALLBACK_DEFAULT_ASSET), dict(_FALLBACK_ASSET_BY_SERVICE)
+
+    if not isinstance(manifest, dict):
+        log.warning("persona_manifest_not_an_object", path=path, template=template)
+        return dict(_FALLBACK_DEFAULT_ASSET), dict(_FALLBACK_ASSET_BY_SERVICE)
+
+    # A manifest naming a different persona means the template mount and
+    # CONPOT_TEMPLATE disagree, which is a deploy fault worth shouting about:
+    # every asset label from here on would describe the wrong site.
+    declared = manifest.get("persona")
+    if declared and declared != template:
+        log.warning(
+            "persona_manifest_name_mismatch",
+            path=path,
+            template=template,
+            declared=declared,
+        )
+
+    assets = manifest.get("assets")
+    assets = assets if isinstance(assets, dict) else {}
+
+    default_asset = _clean_asset(assets.get("default"))
+    if default_asset is None:
+        log.warning(
+            "persona_manifest_no_default_asset", path=path, template=template
+        )
+        return dict(_FALLBACK_DEFAULT_ASSET), dict(_FALLBACK_ASSET_BY_SERVICE)
+
+    by_service: dict[str, dict[str, Any]] = {}
+    raw_services = assets.get("services")
+    if isinstance(raw_services, dict):
+        for service, entry in raw_services.items():
+            cleaned = _clean_asset(entry)
+            if cleaned is None:
+                log.warning(
+                    "persona_manifest_bad_service_asset",
+                    path=path,
+                    template=template,
+                    service=service,
+                )
+                continue
+            by_service[str(service)] = cleaned
+
+    log.info(
+        "persona_assets_loaded",
+        template=template,
+        sector=manifest.get("sector"),
+        site_tag=manifest.get("site_tag"),
+        default_model=default_asset["model"],
+        service_overrides=sorted(by_service),
+    )
+    return default_asset, by_service
+
+
+_DEFAULT_ASSET, _ASSET_BY_SERVICE = load_persona_assets()
 
 
 # Story 18.16 -- per-exchange observation time.

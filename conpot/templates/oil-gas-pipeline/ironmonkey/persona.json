@@ -1,0 +1,59 @@
+{
+  "_comment": [
+    "IronMonkey persona manifest (Phase 2 step H11). NOT read by Conpot -- the",
+    "0.6.0 loader only looks at template.xml and <protocol>/<protocol>.xml, so",
+    "this directory is invisible to it. It is read by the Conpot forwarder",
+    "(deploy/ironmonkey/forwarder/conpot_forwarder.py) to decide WHICH emulated",
+    "device an attacker reached.",
+    "",
+    "asset_type/vendor/model seed the uuid5 of the x-ics-asset node IronPot",
+    "writes, so a wrong entry here does not just mislabel a row -- it merges",
+    "two devices into one graph identity, or splits one into two.",
+    "",
+    "Roster for this persona (see template.xml for the full rationale):",
+    "  S7-1500 + TIM 1531  s7comm, iec104, snmp, http -- compressor unit",
+    "                                                    controller and the",
+    "                                                    telecontrol link",
+    "  Emerson ROC809      modbus                     -- custody-transfer gas",
+    "                                                    flow computer",
+    "  1734-AENTR          enip                       -- POINT I/O adapter",
+    "  FX-PCX27            bacnet                     -- compressor-building",
+    "                                                    controller",
+    "",
+    "The S7-1500 and its TIM 1531 IRC are ONE asset on purpose: a TIM is a",
+    "module of the CPU, not another box.",
+    "",
+    "`services` keys are the forwarder's own data_type values, not port names.",
+    "`default` covers every service with no entry of its own; here that is the",
+    "unit controller, which serves four of the seven protocols."
+  ],
+  "schema_version": 1,
+  "persona": "oil-gas-pipeline",
+  "label": "Natural-gas pipeline compressor and custody-transfer metering station",
+  "sector": "oil_gas",
+  "site_tag": "CS-07",
+  "assets": {
+    "default": {
+      "asset_type": "plc",
+      "vendor": "Siemens",
+      "model": "SIMATIC S7-1500 CPU 1516-3 PN/DP"
+    },
+    "services": {
+      "modbus": {
+        "asset_type": "rtu",
+        "vendor": "Emerson",
+        "model": "ROC809"
+      },
+      "enip": {
+        "asset_type": "network_device",
+        "vendor": "Allen-Bradley",
+        "model": "1734-AENTR/C"
+      },
+      "bacnet": {
+        "asset_type": "plc",
+        "vendor": "Johnson Controls",
+        "model": "FX-PCX27"
+      }
+    }
+  }
+}

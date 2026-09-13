@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IronMonkey `oil-gas-pipeline` persona (Phase 2 step H11).
+
+  A natural-gas pipeline compressor and custody-transfer metering station,
+  site tag CS-07.
+
+  WHY THIS SECTOR IS THE THIRD PERSONA. `oil_gas` is one of exactly three
+  canonical sectors named by ALL SIX Priority Intelligence Requirements in
+  shared/pir/pir-definitions.yaml; the other two are `energy` and
+  `water_wastewater`, which the substation and water-utility personas already
+  cover. Every other candidate (building automation is not even a canonical
+  key in shared/sector_taxonomy.yaml) is named by five PIRs or fewer, so this
+  is the one choice that adds no requirement the fleet cannot already answer.
+
+  FOUR DEVICES BEHIND ONE ADDRESS — the shape step H10 established:
+
+    Siemens SIMATIC S7-1500 CPU 1516-3 PN/DP (+ TIM 1531 IRC)  — the
+        compressor unit controller and the telecontrol link to the gas control
+        centre. Answers S7comm, IEC 60870-5-104 (the TIM's protocol), SNMP
+        (the PROFINET interface answers MIB-II natively) and its own built-in
+        web server.
+    Emerson ROC809  — the custody-transfer gas flow computer. Answers
+        Modbus/TCP, which is how a flow computer publishes its run data.
+    Allen-Bradley 1734-AENTR  — POINT I/O adapter carrying auxiliary station
+        I/O. Answers EtherNet/IP.
+    Johnson Controls FX-PCX27  — the compressor-building controller:
+        ventilation, building temperature and gas-detection annunciation.
+        Answers BACnet/IP.
+
+  The TIM 1531 IRC is a MODULE of the S7-1500, not another box, so S7comm and
+  IEC-104 carry one identity and collapse to a single x-ics-asset.
+
+  Protocol/port set is IDENTICAL to the other two personas, deliberately: the
+  sensor's published ports and the ufw rules in sensor-bootstrap.sh are
+  fleet-wide. What differs between personas is identity and content, not
+  reach.
+
+  OPSEC: zero upstream-Conpot default seed strings. Model numbers and serials
+  are plausible values for the products named, not values captured from real
+  devices. The `as` (Automation System) element is deliberately absent — it
+  has no counterpart on real S7 SZL output and is a known Conpot fingerprint.
+-->
+<core>
+    <template>
+        <entity name="unit">S7-1516-3</entity>
+        <entity name="vendor">Siemens</entity>
+        <entity name="description">Natural-gas pipeline compressor and metering station</entity>
+        <entity name="protocols">HTTP, MODBUS, s7comm, IEC104, SNMP, BACnet, EtherNet/IP</entity>
+        <entity name="creator">IronMonkey</entity>
+    </template>
+    <databus>
+        <key_value_mappings>
+            <!-- ============================================================
+                 S7 identification (returned in SZL 0x011C / 0x0011
+                 responses) — the compressor unit controller.
+                 ============================================================ -->
+            <key name="SystemName">
+                <value type="value">'CS-07-UNIT-CPU'</value>
+            </key>
+            <key name="SystemDescription">
+                <value type="value">'Siemens SIMATIC S7-1500 CPU 1516-3 PN/DP'</value>
+            </key>
+            <key name="PlantIdentifier">
+                <value type="value">'CS-07'</value>
+            </key>
+            <key name="ModuleType">
+                <value type="value">'CPU 1516-3 PN/DP'</value>
+            </key>
+            <key name="Module">
+                <value type="value">'6ES7 516-3AN02-0AB0'</value>
+            </key>
+            <key name="SerialNumber">
+                <value type="value">'S C-L7XD5902'</value>
+            </key>
+            <key name="Copyright">
+                <value type="value">'SIMATIC S7-1500 V2.9'</value>
+            </key>
+            <key name="empty">
+                <value type="value">''</value>
+            </key>
+
+            <!-- ============================================================
+                 SNMP identity — the same CPU. sysLocation is present and
+                 EMPTY: station siting is part of the OPSEC surface, but an
+                 unset sysLocation is the ordinary field state while
+                 noSuchObject beside a populated sysName is not.
+                 ============================================================ -->
+            <key name="sysName">
+                <value type="value">'CS-07-UNIT-CPU'</value>
+            </key>
+            <key name="sysContact">
+                <value type="value">'control@cs-07.local'</value>
+            </key>
+            <key name="sysDescription">
+                <value type="value">'Siemens SIMATIC S7-1500 CPU 1516-3 PN/DP, compressor unit controller'</value>
+            </key>
+            <key name="sysObjectID">
+                <value type="value">'1.3.6.1.4.1.4196'</value>
+            </key>
+            <key name="sysLocation">
+                <value type="value">''</value>
+            </key>
+            <key name="sysServices">
+                <value type="value">'72'</value>
+            </key>
+            <key name="Uptime">
+                <value type="function">conpot.emulators.misc.uptime.Uptime</value>
+            </key>
+
+            <!-- ============================================================
+                 Modbus holding-register backing — the Emerson ROC809 flow
+                 computer's run data. Integer-scaled the way a 16-bit
+                 register file actually carries engineering units; the scale
+                 factor is in the comment and nowhere in the protocol, which
+                 is exactly the situation a real attacker faces.
+                 ============================================================ -->
+            <key name="hr_line_pressure">    <value type="value">6842</value></key>  <!-- 6842 kPa -->
+            <key name="hr_line_temp">        <value type="value">142</value></key>   <!-- 14.2 C -->
+            <key name="hr_flow_rate">        <value type="value">4871</value></key>  <!-- 487.1 e3m3/d -->
+            <key name="hr_diff_pressure">    <value type="value">389</value></key>   <!-- 38.9 kPa -->
+            <key name="hr_suction_pressure"> <value type="value">5210</value></key>  <!-- 5210 kPa -->
+            <key name="hr_discharge_press">  <value type="value">7315</value></key>  <!-- 7315 kPa -->
+            <key name="hr_unit_speed">       <value type="value">8940</value></key>  <!-- 8940 rpm -->
+            <key name="hr_volume_hi">        <value type="value">12</value></key>
+            <key name="hr_volume_lo">        <value type="value">44820</value></key>
+            <key name="hr_station_status">   <value type="value">1</value></key>     <!-- 1=Running -->
+
+            <!-- List-backed databus key consumed by modbus/modbus.xml's
+                 HoldingRegisters block. Conpot 0.6.0 modbus block backing
+                 expects a single databus key whose value is a list whose
+                 length matches the block <size>. -->
+            <key name="hr_station_block">
+                <value type="value">[6842, 142, 4871, 389, 5210, 7315, 8940, 12, 44820, 1]</value>
+            </key>
+
+            <!-- 16 coils: unit start/stop permissives, blowdown, station ESD,
+                 recycle valve. ALL ZERO, unlike the water persona: on a
+                 compressor station these are the safety-critical commands,
+                 and a station that reads back as already commanding a
+                 blowdown is not a plausible steady state. -->
+            <key name="coil_block">
+                <value type="value">[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]</value>
+            </key>
+
+            <!-- ============================================================
+                 IEC-104 register backing — the TIM 1531 IRC telecontrol
+                 link to the gas control centre.
+                 ============================================================ -->
+
+            <!-- SinglePoint (ASDU type 1) -->
+            <key name="unit_1_running">          <value type="value">1</value></key>
+            <key name="unit_2_running">          <value type="value">0</value></key>
+            <key name="station_esd_healthy">     <value type="value">1</value></key>
+
+            <!-- DoublePoint (ASDU type 3) — 0=intermediate, 1=off, 2=on,
+                 3=fault -->
+            <key name="suction_valve_state">     <value type="value">2</value></key>
+            <key name="discharge_valve_state">   <value type="value">2</value></key>
+
+            <!-- MeasuredValueFloatingPoint (ASDU type 13) -->
+            <key name="line_pressure_bar">       <value type="value">68.42</value></key>
+            <key name="gas_flow_e3m3d">          <value type="value">487.1</value></key>
+            <key name="unit_1_vibration_mms">    <value type="value">2.7</value></key>
+
+            <!-- SinglePointWithCP56Time2a (ASDU type 30) — alarms -->
+            <key name="alarm_high_discharge">    <value type="value">0</value></key>
+            <key name="alarm_gas_detection">     <value type="value">0</value></key>
+
+            <!-- ============================================================
+                 IEC-104 protocol parameters. Read by IEC104_server.py /
+                 IEC104.py from the DATABUS, not from IEC104.xml — Conpot
+                 0.6.0's IEC104.xsd does not allow them as XML elements.
+                 Values per IEC 60870-5-104 section 12 defaults.
+                 ============================================================ -->
+            <key name="CommonAddress">  <value type="value">"0x0001"</value></key>
+            <key name="MaxFrameSize">   <value type="value">254</value></key>
+            <key name="T_0">            <value type="value">30</value></key>
+            <key name="T_1">            <value type="value">15</value></key>
+            <key name="T_2">            <value type="value">10</value></key>
+            <key name="T_3">            <value type="value">20</value></key>
+            <key name="k">              <value type="value">12</value></key>
+            <key name="w">              <value type="value">8</value></key>
+        </key_value_mappings>
+    </databus>
+</core>

@@ -1350,3 +1350,195 @@ class TestNewOtProtocolMapping:
         )["protocol_data"]
         assert len(data["cip_symbol"]) == 512
         assert data["cip_symbol_truncated"] is True
+
+
+class TestPersonaAssetRoster:
+    """Phase 2 step H11 -- the device roster travels with the template tree.
+
+    `asset_type`/`vendor`/`model` seed the uuid5 of the `x-ics-asset` node
+    IronPot writes, so this map decides graph identity, not a display string.
+    Before H11 it was a pair of literals in the forwarder, correct for exactly
+    one persona; `--template` makes the persona a per-sensor choice, so the
+    roster has to ship with the persona.
+
+    Everything here is about failing OPEN. The forwarder is on the ingest
+    path: a missing or malformed manifest must degrade to a plausible label,
+    never stop a sensor forwarding.
+    """
+
+    @staticmethod
+    def _write(tmp_path, template, manifest):
+        d = tmp_path / template / "ironmonkey"
+        d.mkdir(parents=True)
+        (d / "persona.json").write_text(json.dumps(manifest))
+        return str(tmp_path)
+
+    def test_roster_is_read_from_the_persona_manifest(self, tmp_path):
+        cf = _reload_module()
+        root = self._write(
+            tmp_path,
+            "water-utility",
+            {
+                "persona": "water-utility",
+                "sector": "water_wastewater",
+                "assets": {
+                    "default": {
+                        "asset_type": "plc",
+                        "vendor": "Allen-Bradley",
+                        "model": "MicroLogix 1400 1766-L32BWA",
+                    },
+                    "services": {
+                        "bacnet": {
+                            "asset_type": "plc",
+                            "vendor": "Johnson Controls",
+                            "model": "NAE5510",
+                        }
+                    },
+                },
+            },
+        )
+        default, by_service = cf.load_persona_assets("water-utility", root)
+        assert default["vendor"] == "Allen-Bradley"
+        assert by_service["bacnet"]["model"] == "NAE5510"
+        assert "enip" not in by_service, "enip must fall through to the default"
+
+    def test_missing_mount_falls_back_to_the_substation_roster(self, tmp_path):
+        """A sensor deployed before H11 has no template mount at all.
+
+        It must keep labelling exactly as it did, not stop forwarding and not
+        start emitting assets with no vendor.
+        """
+        cf = _reload_module()
+        default, by_service = cf.load_persona_assets(
+            "s7-315-substation", str(tmp_path / "does-not-exist")
+        )
+        assert default == cf._FALLBACK_DEFAULT_ASSET
+        assert by_service == cf._FALLBACK_ASSET_BY_SERVICE
+
+    def test_malformed_json_falls_back(self, tmp_path):
+        cf = _reload_module()
+        d = tmp_path / "broken" / "ironmonkey"
+        d.mkdir(parents=True)
+        (d / "persona.json").write_text("{not json")
+        default, _ = cf.load_persona_assets("broken", str(tmp_path))
+        assert default == cf._FALLBACK_DEFAULT_ASSET
+
+    def test_manifest_without_a_default_asset_falls_back_entirely(self, tmp_path):
+        """Service overrides without a default would leave most protocols
+        unlabelled, which is a worse outcome than the wrong-but-complete
+        fallback."""
+        cf = _reload_module()
+        root = self._write(
+            tmp_path,
+            "partial",
+            {"assets": {"services": {"bacnet": {"asset_type": "plc"}}}},
+        )
+        default, by_service = cf.load_persona_assets("partial", root)
+        assert default == cf._FALLBACK_DEFAULT_ASSET
+        assert by_service == cf._FALLBACK_ASSET_BY_SERVICE
+
+    def test_incomplete_service_entry_is_dropped_not_partially_applied(self, tmp_path):
+        """IronPot's uuid5 is over the whole triple, so an entry missing
+        `model` would mint a third identity for a device that already has
+        one. Dropping it falls back to the persona default instead."""
+        cf = _reload_module()
+        root = self._write(
+            tmp_path,
+            "sparse",
+            {
+                "assets": {
+                    "default": {
+                        "asset_type": "plc",
+                        "vendor": "Siemens",
+                        "model": "S7-1500",
+                    },
+                    "services": {
+                        "bacnet": {"asset_type": "plc", "vendor": "Johnson Controls"},
+                        "enip": {
+                            "asset_type": "network_device",
+                            "vendor": "Allen-Bradley",
+                            "model": "1734-AENTR/C",
+                        },
+                    },
+                }
+            },
+        )
+        _, by_service = cf.load_persona_assets("sparse", root)
+        assert "bacnet" not in by_service
+        assert by_service["enip"]["model"] == "1734-AENTR/C"
+
+    def test_both_iec104_spellings_can_be_mapped(self, tmp_path):
+        """`_map_record` branches on `data_type in ("iec104", "iec-104")` and
+        then looks the raw value up in the roster, so a persona that puts
+        IEC-104 on its own device needs both keys or one spelling silently
+        gets the default asset."""
+        cf = _reload_module()
+        entry = {
+            "asset_type": "plc",
+            "vendor": "Siemens",
+            "model": "SIMATIC S7-1200 CPU 1214C",
+        }
+        root = self._write(
+            tmp_path,
+            "dual",
+            {
+                "assets": {
+                    "default": {
+                        "asset_type": "plc",
+                        "vendor": "Allen-Bradley",
+                        "model": "MicroLogix 1400 1766-L32BWA",
+                    },
+                    "services": {"iec104": entry, "iec-104": entry},
+                }
+            },
+        )
+        _, by_service = cf.load_persona_assets("dual", root)
+        assert by_service["iec104"] == by_service["iec-104"] == entry
+
+    def test_shipped_manifests_are_complete_and_distinct(self):
+        """Guards the three personas this repo actually ships.
+
+        Two personas answering with the same vendor+model on the same protocol
+        would merge two sensors' devices into one graph identity; a persona
+        whose manifest names a different directory would label every session
+        with the wrong site.
+        """
+        cf = _reload_module()
+        templates = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(cf.__file__)
+            )))),
+            "conpot",
+            "templates",
+        )
+        seen = {}
+        for persona in ("s7-315-substation", "water-utility", "oil-gas-pipeline"):
+            manifest_path = os.path.join(
+                templates, persona, "ironmonkey", "persona.json"
+            )
+            assert os.path.isfile(manifest_path), manifest_path
+            with open(manifest_path, encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            assert manifest["persona"] == persona
+            assert manifest["sector"], "a persona with no sector answers no PIR"
+            default, by_service = cf.load_persona_assets(persona, templates)
+            # An empty model means the manifest did not parse and the loader
+            # fell back; every shipped persona must load on its own terms.
+            assert default["model"], persona
+            # Within a persona, two services SHARING an identity is the point
+            # (a CP or TIM module is not another box). ACROSS personas it is a
+            # fleet-correlation bug: two sensors answering with the same
+            # vendor and model on the same protocol merge into one graph
+            # identity.
+            mine = {
+                (service.replace("iec-104", "iec104"), entry["vendor"], entry["model"])
+                for service, entry in list(by_service.items())
+                + [("__default__", default)]
+            }
+            for key in mine:
+                assert key not in seen, (
+                    "persona %s repeats %s on %s, already used by %s"
+                    % (persona, key[2], key[0], seen.get(key))
+                )
+            for key in mine:
+                seen[key] = persona

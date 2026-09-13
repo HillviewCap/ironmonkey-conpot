@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BACnet/IP device for the `oil-gas-pipeline` persona (step H11). Bound on
+  47808/udp inside and out.
+
+  Persona rationale. BACnet is not a process protocol and would be wrong on
+  the unit controller. It is the right protocol for the other controller a
+  compressor station building has: the one running ventilation and building
+  temperature and annunciating the gas-detection heads. Johnson Controls holds
+  ASHRAE BACnet vendor identifier 5 and is the dominant building-management
+  vendor across North American industrial sites, so a Facility Explorer
+  controller here contradicts nothing in the station story.
+
+  OPSEC: none of these values is an upstream Conpot default. The default
+  template answers as an Alerton VAV-DD Controller whose device_name is the
+  literal string "SystemName" — Conpot reads device_name as a literal, not as
+  a databus key (BacnetServer.__init__), so that string is a Conpot tell on
+  its own. The device identifier and object identifiers are also distinct from
+  the other two personas: two sensors answering Who-Is with the same device
+  instance number would correlate the fleet in one broadcast.
+
+  Element ORDER in device_info is load-bearing: BACnetApp
+  .get_objects_and_properties takes the device identifier positionally, as the
+  second child. Keep device_name first and device_identifier second.
+-->
+<bacnet enabled="True" host="0.0.0.0" port="47808">
+    <device_info>
+        <device_name>CS-07-BLDG-BMS</device_name>
+        <device_identifier>3301</device_identifier>
+        <vendor_name>Johnson Controls Inc.</vendor_name>
+        <vendor_identifier>5</vendor_identifier>
+        <max_apdu_length_accepted>1476</max_apdu_length_accepted>
+        <segmentation_supported>segmentedBoth</segmentation_supported>
+        <model_name>FX-PCX27</model_name>
+        <protocol_version>1</protocol_version>
+    </device_info>
+    <object_list>
+        <!-- Compressor building environment and gas detection. present_value
+             is read back through ast.literal_eval, so every value here has to
+             stay a Python literal (a bare number, not "27.8 C"). -->
+        <object name="objectCompBldgTemp">
+            <properties>
+                <object_identifier>31</object_identifier>
+                <object_name>AI_COMP_BLDG_TEMP</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>27.8</present_value>
+            </properties>
+        </object>
+        <object name="objectCompBldgHumidity">
+            <properties>
+                <object_identifier>32</object_identifier>
+                <object_name>AI_COMP_BLDG_RH</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>38.0</present_value>
+            </properties>
+        </object>
+        <object name="objectVentFanRun">
+            <properties>
+                <object_identifier>33</object_identifier>
+                <object_name>BI_VENT_FAN_RUN</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>1</present_value>
+            </properties>
+        </object>
+        <object name="objectGasDetectAlarm">
+            <properties>
+                <object_identifier>34</object_identifier>
+                <object_name>BI_GAS_DETECT_ALARM</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>0</present_value>
+            </properties>
+        </object>
+    </object_list>
+</bacnet>
