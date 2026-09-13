@@ -20,6 +20,14 @@ conpot.protocols.bacnet.bacnet\_server module
    :undoc-members:
    :show-inheritance:
 
+conpot.protocols.bacnet.bvlc module
+-----------------------------------
+
+.. automodule:: conpot.protocols.bacnet.bvlc
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 
 Module contents
 ---------------
