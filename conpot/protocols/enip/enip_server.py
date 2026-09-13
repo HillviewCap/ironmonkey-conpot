@@ -32,6 +32,7 @@ from cpppo.server.enip import device
 from conpot.core.protocol_wrapper import conpot_protocol
 import conpot.core as conpot_core
 from conpot.utils.networking import get_interface_ip
+from conpot.utils.rate_limit import UdpRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,11 @@ class EnipConfig(object):
         )
         self.timeout = float(dom.xpath("//enip/timeout/text()")[0])
         self.latency = float(dom.xpath("//enip/latency/text()")[0])
+        # Step H10c. Only the UDP half is gated; the TCP half already sits
+        # behind Conpot's connection handling, and a token bucket in front of
+        # a stream protocol cuts sessions in half mid-exchange, destroying
+        # the capture the sensor exists for.
+        self.rate_limiter = UdpRateLimiter.from_dom(dom, "//enip", "enip")
 
         # parse device tags, these tags will be further processed by the ENIP server
         self.dtags = []
@@ -216,6 +222,8 @@ class EnipServer(object):
         self.port = self.config.server_port
         self.connections = cpppo.dotdict()
         self.control = None
+        # Read by handle_udp only (step H10c).
+        self.rate_limiter = self.config.rate_limiter
 
         # Before any tag is created, so the Identity Object picks the
         # template's values up when cpppo constructs it.
@@ -719,6 +727,17 @@ class EnipServer(object):
                                         or kwds["server"]["control"]["disable"]
                                     ):
                                         return
+                                # Step H10c: drop over-rate datagrams here,
+                                # before the peer reaches the parser, the
+                                # stats table or a session. Dropping later
+                                # would still have paid for the parse, and
+                                # `stats_for` would still have grown a row
+                                # per spoofed source. Silent by design: an
+                                # error reply would both confirm the
+                                # listener and re-arm the amplifier.
+                                if msg and not self.rate_limiter.allow(frm[0]):
+                                    msg, frm = None, None
+                                    continue
                                 (logger.info if msg else logger.debug)(
                                     "Transaction receive after %7.3fs (%5s bytes in %7.3f/%7.3fs): %r",
                                     now - begun,

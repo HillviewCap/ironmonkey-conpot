@@ -39,6 +39,20 @@
                         </xs:sequence>
                     </xs:complexType>
                 </xs:element>
+                <!-- Optional (Phase 2 step H10c). Per-source token bucket on
+                     47808/udp. Omitted, the code defaults apply: 10
+                     datagrams/s sustained per source, burst 30. A
+                     datagrams_per_second of 0 disables the limiter, which
+                     leaves an internet-exposed sensor pinnable by one flood
+                     and usable as a reflection amplifier. -->
+                <xs:element name="rate_limit" minOccurs="0" maxOccurs="1">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element type="xs:float" name="datagrams_per_second" minOccurs="0" maxOccurs="1"/>
+                            <xs:element type="xs:float" name="burst" minOccurs="0" maxOccurs="1"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
             </xs:sequence>
             <xs:attribute type="xs:string" name="enabled" use="required"/>
             <xs:attribute type="xs:string" name="host" use="required"/>

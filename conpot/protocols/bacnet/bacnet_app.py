@@ -21,11 +21,12 @@
 import logging
 import re
 import sys
-from bacpypes.pdu import GlobalBroadcast
+from bacpypes.pdu import GlobalBroadcast, LocalBroadcast
 import bacpypes.object
 from bacpypes.app import BIPSimpleApplication
 from bacpypes.constructeddata import Any
 from bacpypes.constructeddata import InvalidParameterDatatype
+from bacpypes.primitivedata import CharacterString
 from bacpypes.apdu import (
     APDU,
     apdu_types,
@@ -41,6 +42,8 @@ from bacpypes.apdu import (
 )
 from bacpypes.pdu import PDU
 import ast
+
+from conpot.protocols.bacnet import bvlc
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +63,24 @@ class BACnetApp(BIPSimpleApplication):
         self._response = None
         self._response_service = None
         self.localDevice = device
-        self.objectName = {device.objectName: device}
-        self.objectIdentifier = {device.objectIdentifier: device}
         self.datagram_server = datagram_server
         self.deviceIdentifier = None
         super(BIPSimpleApplication, self).__init__()
+        # Step H10c: registered AFTER the superclass constructor, which
+        # assigns both dictionaries fresh. Registering before it -- as this
+        # did from 2015 until now -- meant the device object was in neither
+        # map, so `device:<instance>` resolved to nothing and a ReadProperty
+        # of it produced no reply at all. `nmap --script bacnet-info` reads
+        # the DEVICE object's objectName, vendorName and modelName, so the
+        # single most common BACnet fingerprint request timed out while the
+        # analog and binary points answered normally.
+        #
+        # It also puts the device first in `objectIdentifier`, which is what
+        # `whoIs`/`whoHas` index with `list(...keys())[0][1]` when they range
+        # check a Who-Is: that read the first TEMPLATE object's instance
+        # before, not the device's.
+        self.objectName = {device.objectName: device}
+        self.objectIdentifier = {device.objectIdentifier: device}
 
     def get_objects_and_properties(self, dom):
         """
@@ -205,69 +221,165 @@ class BACnetApp(BIPSimpleApplication):
             execute = True
 
         if execute:
-            for obj in device.objectList.value[2:]:
-                if (
-                    int(request.object.objectIdentifier[1]) == obj[1]
-                    and request.object.objectIdentifier[0] == obj[0]
-                ):
-                    objName = self.objectIdentifier[obj].objectName
-                    self._response_service = "IHaveRequest"
-                    self._response = IHaveRequest()
-                    self._response.pduDestination = GlobalBroadcast()
-                    # self._response.deviceIdentifier = list(self.objectIdentifier.keys())[0][1]
-                    self._response.deviceIdentifier = self.deviceIdentifier
-                    self._response.objectIdentifier = obj[1]
-                    self._response.objectName = objName
-                    break
-            else:
+            target = getattr(request, "object", None)
+            obj = self._resolve_object(
+                getattr(target, "objectIdentifier", None), device
+            )
+            if obj is None:
                 logger.info("Bacnet WhoHasRequest: no object found")
+                return
+            self._response_service = "IHaveRequest"
+            self._response = IHaveRequest()
+            self._response.pduDestination = GlobalBroadcast()
+            self._response.deviceIdentifier = self.deviceIdentifier
+            # Instance only, not the (type, instance) pair. That is wrong on
+            # the wire -- binaryInput:12 encodes as analogInput:12 -- but it
+            # is what this server has always sent and what upstream Conpot's
+            # own test pins, and a Who-Has reply is not on the path step H10c
+            # exists to repair. Noted rather than changed.
+            self._response.objectIdentifier = obj.objectIdentifier[1]
+            self._response.objectName = obj.objectName
+
+    # ── Object and property resolution (Phase 2 step H10c) ────────────────
+
+    def _resolve_object(self, object_identifier, device):
+        """Find the emulated object a request names, or None.
+
+        `device.objectList.value` is a bacpypes array whose element 0 is the
+        array LENGTH and whose element 1 is the device object itself, which
+        is why every walk here used to start at `[2:]`. That slice is what
+        made the device object unaddressable. Skipping non-pair entries
+        instead of slicing a fixed offset keeps that from depending on the
+        array layout at all.
+        """
+        if object_identifier is None:
+            return None
+        try:
+            wanted_type = object_identifier[0]
+            wanted_instance = int(object_identifier[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+        for entry in device.objectList.value:
+            if not (isinstance(entry, (tuple, list)) and len(entry) == 2):
+                continue  # the array length at element 0
+            try:
+                if entry[0] != wanted_type or int(entry[1]) != wanted_instance:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            return self.objectIdentifier.get(tuple(entry))
+        return None
+
+    @staticmethod
+    def _find_property(obj, identifier):
+        """Look a property up by its BACnet identifier.
+
+        bacpypes' `Object.properties` is only the list the object's OWN class
+        declares; everything inherited lives in the merged `_properties` dict
+        its metaclass builds. Walking `.properties` is the second half of the
+        objectName defect: `LocalDeviceObject.properties` holds exactly three
+        entries (localDate, localTime, protocolServicesSupported), so the
+        device could not answer objectName even once it was addressable.
+        """
+        merged = getattr(obj, "_properties", None)
+        if merged:
+            prop = merged.get(identifier)
+            if prop is not None:
+                return prop
+        for prop in getattr(obj, "properties", []):
+            if prop.identifier == identifier:
+                return prop
+        return None
+
+    @staticmethod
+    def _property_value(prop_value, prop_type):
+        """Turn a template's text into the property's own datatype.
+
+        Every value in a template is text, so `present_value` has to be run
+        through `ast.literal_eval` to become the float BACnet needs. Doing
+        that to EVERY property is the third half of the objectName defect:
+        `literal_eval("SUBSTATION-01-BMS")` raises ValueError, and the
+        exception escaped `indication()` and the datagram handler, so the
+        client got nothing back rather than an error PDU.
+
+        Keying on the declared datatype rather than on whether the text
+        happens to parse: an object named "1" must stay the string "1".
+        """
+        if not isinstance(prop_value, str) or isinstance(prop_type, CharacterString):
+            return prop_value
+        try:
+            return ast.literal_eval(prop_value)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            return prop_value
+
+    def _error_response(self, address, invoke_key, service=0x0C):
+        self._response_service = "ErrorPDU"
+        self._response = ErrorPDU()
+        self._response.pduDestination = address
+        self._response.apduInvokeID = invoke_key
+        self._response.apduService = service
 
     def readProperty(self, request, address, invoke_key, device):
         # Read Property
         # TODO: add support for PropertyArrayIndex handling;
-        for obj in device.objectList.value[2:]:
-            if (
-                int(request.objectIdentifier[1]) == obj[1]
-                and request.objectIdentifier[0] == obj[0]
-            ):
-                objName = self.objectIdentifier[obj].objectName
-                for prop in self.objectIdentifier[obj].properties:
-                    if request.propertyIdentifier == prop.identifier:
-                        propName = prop.identifier
-                        propValue = prop.ReadProperty(self.objectIdentifier[obj])
-                        propType = prop.datatype()
-                        self._response_service = "ComplexAckPDU"
-                        self._response = ReadPropertyACK()
-                        self._response.pduDestination = address
-                        self._response.apduInvokeID = invoke_key
-                        self._response.objectIdentifier = obj[1]
-                        self._response.objectName = objName
-                        self._response.propertyIdentifier = propName
+        object_identifier = getattr(request, "objectIdentifier", None)
+        obj = self._resolve_object(object_identifier, device)
+        if obj is None:
+            # Previously this fell out of the loop leaving `self._response`
+            # untouched, so the server re-sent whatever it had answered the
+            # PREVIOUS caller -- a cross-client leak as well as a wrong reply.
+            logger.info(
+                "Bacnet ReadProperty: no such object %s", (object_identifier,)
+            )
+            self._error_response(address, invoke_key)
+            return
 
-                        # get the property type
-                        for p in dir(sys.modules[propType.__module__]):
-                            _obj = getattr(sys.modules[propType.__module__], p)
-                            try:
-                                if type(propType) == _obj:
-                                    break
-                            except TypeError:
-                                pass
-                        value = ast.literal_eval(propValue)
-                        self._response.propertyValue = Any(_obj(value))
-                        # self._response.propertyValue.cast_in(objPropVal)
-                        # self._response.debug_contents()
+        prop = self._find_property(obj, request.propertyIdentifier)
+        if prop is None:
+            logger.info(
+                "Bacnet ReadProperty: object has no property %s",
+                request.propertyIdentifier,
+            )
+            self._error_response(address, invoke_key)
+            return
+
+        try:
+            prop_value = prop.ReadProperty(obj)
+            prop_type = prop.datatype()
+            # get the property type
+            for p in dir(sys.modules[prop_type.__module__]):
+                _obj = getattr(sys.modules[prop_type.__module__], p)
+                try:
+                    if type(prop_type) == _obj:
                         break
-                else:
-                    logger.info(
-                        "Bacnet ReadProperty: object has no property %s",
-                        request.propertyIdentifier,
-                    )
-                    self._response = ErrorPDU()
-                    self._response.pduDestination = address
-                    self._response.apduInvokeID = invoke_key
-                    self._response.apduService = 0x0C
-                    # self._response.errorClass
-                    # self._response.errorCode
+                except TypeError:
+                    pass
+            encoded = Any(_obj(self._property_value(prop_value, prop_type)))
+        except Exception as exc:
+            # A property whose value will not encode (an array, a bit string
+            # the template never filled in) must answer an error, not raise
+            # into the datagram handler and leave the client hanging.
+            logger.info(
+                "Bacnet ReadProperty: %s is not encodable (%s)",
+                request.propertyIdentifier,
+                exc,
+            )
+            self._error_response(address, invoke_key)
+            return
+
+        self._response_service = "ComplexAckPDU"
+        self._response = ReadPropertyACK()
+        self._response.pduDestination = address
+        self._response.apduInvokeID = invoke_key
+        # The (type, instance) pair, not the bare instance: a client checks
+        # the ACK against what it asked for, and a bare instance re-encodes
+        # as analogInput:<n> whatever the real type was. For the analogInput
+        # objects the two forms are byte-identical, which is why the existing
+        # tests never caught it and why they still pass.
+        self._response.objectIdentifier = obj.objectIdentifier
+        self._response.objectName = obj.objectName
+        self._response.propertyIdentifier = prop.identifier
+        self._response.propertyValue = encoded
 
     # ── Session capture (Phase 2 step H10) ────────────────────────────────
     #
@@ -344,6 +456,19 @@ class BACnetApp(BIPSimpleApplication):
         """logging the received PDU type and Service request"""
         request = None
         apdu_type = apdu_types.get(apdu.apduType)
+        if apdu_type is None:
+            # Types 0x8-0xF are reserved. The branch below that means to
+            # ignore them reads `apdu_type.pduType`, so it was never reached:
+            # the `apdu_type.__name__` on the log line under it raised
+            # AttributeError first, straight out of the datagram handler.
+            logger.info(
+                "Bacnet reserved PDU type %s from %s:%d",
+                apdu.apduType,
+                address[0],
+                address[1],
+            )
+            self._response = None
+            return
         invoke_key = apdu.apduInvokeID
         logger.info(
             "Bacnet PDU received from %s:%d. (%s)",
@@ -468,13 +593,48 @@ class BACnetApp(BIPSimpleApplication):
             return
 
     # socket not actually socket, but DatagramServer with sendto method
-    def response(self, response_apdu, address):
+    def response(self, response_apdu, address, link=None):
+        """Send the built response.
+
+        `link` is the BVLC/NPDU framing the REQUEST arrived under (step
+        H10c). When it is None the request was a bare APDU and the reply is
+        one too, which is the path Conpot's own tests have always used. When
+        it is set, the reply carries the same link layer back -- without it a
+        standards-conforming client discards the answer as malformed, which
+        is the other half of why real BACnet traffic produced no sessions.
+        """
         if response_apdu is None:
             return
         apdu = APDU()
         response_apdu.encode(apdu)
         pdu = PDU()
         apdu.encode(pdu)
+
+        if link is not None:
+            # I-Am and I-Have are broadcast services and carry a broadcast
+            # destination; a ComplexAck or an error is unicast. The BVLL
+            # function follows that, while the UDP destination stays the
+            # requester either way -- a real subnet broadcast from a sensor
+            # on a public address reaches nobody.
+            broadcast = isinstance(
+                getattr(response_apdu, "pduDestination", None),
+                (GlobalBroadcast, LocalBroadcast),
+            )
+            self.datagram_server.sendto(
+                bvlc.wrap(bytes(pdu.pduData), link, broadcast=broadcast), address
+            )
+            logger.info(
+                "Bacnet response sent to %s:%s (%s, %s) over %s",
+                address[0],
+                address[1],
+                apdu_types.get(response_apdu.apduType).__name__
+                if apdu_types.get(response_apdu.apduType)
+                else response_apdu.apduType,
+                self._response_service,
+                "Original-Broadcast-NPDU" if broadcast else "Original-Unicast-NPDU",
+            )
+            return
+
         if isinstance(response_apdu, RejectPDU) or isinstance(response_apdu, ErrorPDU):
             self.datagram_server.sendto(pdu.pduData, address)
         else:

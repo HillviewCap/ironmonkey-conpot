@@ -31,9 +31,35 @@ def chr_py3(x):
     return bytearray((x,))
 
 
-# convert a string to an ascii byte string
+# convert a string to a byte string for the wire
 def str_to_bytes(x):
-    return x if isinstance(x, bytes) else str(x).encode("ascii")
+    """Encode text to the bytes a protocol handler writes to its socket.
+
+    UTF-8, not ASCII (Phase 2 step H10c). This was `.encode("ascii")`, and it
+    is the root cause of the substation persona's start page never having
+    been served: `command_responder.do_GET` sends the status line and the
+    headers, THEN encodes the body here, so a single non-ASCII byte anywhere
+    in an htdocs file raised `UnicodeEncodeError` after the client had
+    already been promised a 200. The client saw a truncated body on a broken
+    connection and the only trace was a traceback in the container log. The
+    page shipped with an em dash and eight U+2022 bullets, so the persona's
+    front door -- and the `/login` form the H4 credential capture depends on
+    -- had never actually reached a client.
+
+    It is a honeypot response path, so this must not raise on ANY input.
+    `surrogateescape` first, so bytes that arrived through a
+    `surrogateescape` decode go back out unchanged; `replace` as the last
+    resort, because a mangled character in a decoy page is strictly better
+    than a half-sent response. UTF-8 is a superset of ASCII, so every value
+    that worked before is byte-identical now.
+    """
+    if isinstance(x, bytes):
+        return x
+    text = x if isinstance(x, str) else str(x)
+    try:
+        return text.encode("utf-8", errors="surrogateescape")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", errors="replace")
 
 
 # https://www.bountysource.com/issues/4335201-ssl-broken-for-python-2-7-9
