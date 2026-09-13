@@ -53,6 +53,7 @@ from lxml import etree
 import conpot
 from conpot.protocols.http import web_server
 from conpot.utils.greenlet import spawn_test_server, teardown_test_server
+from conpot.utils.networking import str_to_bytes
 
 TEMPLATE = "s7-315-substation"
 
@@ -159,25 +160,27 @@ class TestSubstationHmiAuth(unittest.TestCase):
 
     # ── Template validity ────────────────────────────────────────────────────
 
-    def test_every_served_page_is_pure_ascii(self):
-        """Conpot's GET path encodes the body with `.encode("ascii")`.
+    def test_every_served_page_survives_the_encode_the_get_path_uses(self):
+        """Every htdocs file must reach the client byte for byte.
 
-        `command_responder.do_GET:890` calls `utils.networking.str_to_bytes`,
-        which is ASCII-only. A single non-ASCII byte anywhere in an htdocs file
-        therefore raises `UnicodeEncodeError` AFTER the status line and headers
-        have already gone out, so the client gets a 200 (or a 401) followed by
-        a truncated body and a broken connection, and the only trace is a
-        traceback in the container log.
+        History, because the assertion moved (Phase 2 step H10c): this used
+        to forbid non-ASCII bytes outright. `do_GET` sends the status line and
+        the headers and THEN encodes the body through
+        `utils.networking.str_to_bytes`, which was `.encode("ascii")`, so one
+        non-ASCII byte anywhere raised UnicodeEncodeError after the client had
+        already been promised a 200 -- a truncated body on a broken
+        connection, traceback in the container log, nothing else. The start
+        page shipped with an em dash and eight U+2022 bullets, so the
+        persona's front door and the `/login` form the H4 capture depends on
+        had never once served. `do_POST` used a plain `.encode()` and did not
+        have the problem, which is why a POST-only test missed it entirely.
 
-        It is invisible from the template: the page looks right in an editor
-        and the node validates. `do_POST:966` uses a plain `.encode()` (UTF-8)
-        and does NOT have the problem, which is why a POST-only test would
-        have missed this entirely.
-
-        Found the hard way: the start page shipped with an em dash and eight
-        U+2022 bullets in the password placeholder, so `GET /index.html` --
-        the persona's front door, and the page carrying the `/login` form this
-        step depends on -- had never actually served to a client.
+        H4 worked around it by banning the bytes. H10c fixed the encoder --
+        UTF-8 both ways with `surrogateescape` -- so the ban is gone and what
+        is pinned instead is the property that actually matters: decode then
+        encode is the identity on these files, which is what makes the
+        Content-Length the server sends the number of bytes it then writes.
+        `test_http_non_ascii.py` covers the serving path end to end.
         """
         conpot_dir = os.path.dirname(conpot.__file__)
         htdocs = os.path.join(conpot_dir, "templates", TEMPLATE, "http", "htdocs")
@@ -187,16 +190,13 @@ class TestSubstationHmiAuth(unittest.TestCase):
                 path = os.path.join(root, name)
                 with open(path, "rb") as fh:
                     body = fh.read()
-                try:
-                    body.decode("ascii")
-                except UnicodeDecodeError as exc:
-                    rel = os.path.relpath(path, htdocs)
-                    offenders.append("{0}: {1}".format(rel, exc))
+                if str_to_bytes(body.decode("utf-8", errors="surrogateescape")) != body:
+                    offenders.append(os.path.relpath(path, htdocs))
         self.assertEqual(
             [],
             offenders,
-            "non-ASCII bytes in an htdocs file break GET at str_to_bytes; "
-            "use an HTML entity (&mdash;, &bull;) instead",
+            "these htdocs files do not survive the GET path's decode/encode "
+            "round trip, so they will be served truncated or mangled",
         )
 
     def test_http_template_validates_against_the_protocol_xsd(self):

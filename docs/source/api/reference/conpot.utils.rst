@@ -28,6 +28,14 @@ conpot.utils.networking module
    :undoc-members:
    :show-inheritance:
 
+conpot.utils.rate\_limit module
+-------------------------------
+
+.. automodule:: conpot.utils.rate_limit
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 
 Module contents
 ---------------
