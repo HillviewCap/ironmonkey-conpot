@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  EtherNet/IP for the UW-OST DACH substation persona (step H13). Bound on
+  44818, TCP and UDP.
+
+  Why a WAGO coupler, and why ENIP at all on a Siemens site. The fleet-wide
+  port set (H11 invariant) means every persona serves 44818, and an
+  open-but-dead port is a stronger negative signal than a closed one. The
+  base persona resolves that with a separate third-party I/O box, and this
+  one keeps the shape but swaps the box: a Rockwell adapter is the
+  North-American default, a WAGO 750-series fieldbus coupler is the German
+  one. WAGO Kontakttechnik GmbH (Minden) holds ODVA vendor id 40; the
+  750-352 is a plain ETHERNET fieldbus coupler that speaks EtherNet/IP and
+  Modbus/TCP, exactly the kind of retrofit I/O node a distribution
+  substation carries for auxiliary signals.
+
+  A real device answers explicit messaging on 44818/tcp AND ListIdentity on
+  44818/udp; serving only TCP is itself a tell. 2222/udp (CIP class-1
+  implicit I/O) is deliberately not served, as on the base persona.
+
+  OPSEC: EnipServer.apply_identity makes <device_info> load-bearing, so
+  nothing here repeats a cpppo default, and the serial differs from every
+  other persona (test-enforced). The product code, revision, serial and
+  status word are plausible values for the product, not captured ones.
+  Status 0x0030 reads as configured (bit 2) with a connection established
+  (extended status 3).
+-->
+<enip enabled="True" host="0.0.0.0" port="44818">
+    <device_info>
+        <!-- ODVA vendor id 40, WAGO. -->
+        <VendorId>40</VendorId>
+        <ProductName>750-352 ETHERNET Coupler</ProductName>
+        <!-- CIP device type 0x0C, Communications Adapter. -->
+        <DeviceType>12</DeviceType>
+        <SerialNumber>30517246</SerialNumber>
+        <!-- major<<8 | minor -> 0x0117, revision 1.23 -->
+        <ProductRevision>279</ProductRevision>
+        <ProductCode>352</ProductCode>
+        <StatusWord>0x0030</StatusWord>
+    </device_info>
+
+    <mode>tcp,udp</mode>
+    <latency>0.12</latency>
+    <timeout>20</timeout>
+
+    <!-- Auxiliary I/O the coupler carries for the substation. Vendor-specific
+         class range (0x64+) as on the base persona, different instances. -->
+    <tags>
+        <tag name="FELD3_LS_STATUS">
+            <type>SINT</type>
+            <size>1</size>
+            <value>1</value>
+            <addr>100/2/1</addr>
+        </tag>
+        <tag name="TRAFO2_OELTEMP">
+            <type>REAL</type>
+            <size>4</size>
+            <value>61.7</value>
+            <addr>100/2/2</addr>
+        </tag>
+        <tag name="IO_KNOTEN_ID">
+            <type>SSTRING</type>
+            <size>16</size>
+            <value>UW-OST-FELD-03</value>
+            <addr>100/2/3</addr>
+        </tag>
+    </tags>
+</enip>

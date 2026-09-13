@@ -1496,7 +1496,7 @@ class TestPersonaAssetRoster:
         assert by_service["iec104"] == by_service["iec-104"] == entry
 
     def test_shipped_manifests_are_complete_and_distinct(self):
-        """Guards the three personas this repo actually ships.
+        """Guards the four personas this repo actually ships.
 
         Two personas answering with the same vendor+model on the same protocol
         would merge two sensors' devices into one graph identity; a persona
@@ -1512,7 +1512,12 @@ class TestPersonaAssetRoster:
             "templates",
         )
         seen = {}
-        for persona in ("s7-315-substation", "water-utility", "oil-gas-pipeline"):
+        for persona in (
+            "s7-315-substation",
+            "water-utility",
+            "oil-gas-pipeline",
+            "s7-317-substation-de",
+        ):
             manifest_path = os.path.join(
                 templates, persona, "ironmonkey", "persona.json"
             )

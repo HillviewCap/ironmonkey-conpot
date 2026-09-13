@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "IronMonkey persona manifest (Phase 2 step H11 schema, v1). NOT read by",
+    "Conpot -- the forwarder reads it to stamp asset_type/vendor/model on",
+    "every event; those three fields seed the uuid5 of the x-ics-asset node.",
+    "",
+    "This persona is the DACH regional VARIANT of s7-315-substation (step",
+    "H13, Decision 19, the Western Europe sensor). `variant_of` and `region`",
+    "are informational: the forwarder ignores them, and the unified registry",
+    "repeats them so its sector-uniqueness check can exempt a variant from",
+    "the one-persona-per-sector rule while still requiring every device",
+    "identity below to be distinct from the base persona's.",
+    "",
+    "Why a CPU 317 and not a second 315: two personas sharing vendor+model on",
+    "any protocol merge two sensors' devices into one graph identity (see",
+    "test_shipped_manifests_are_complete_and_distinct in the forwarder tests).",
+    "",
+    "asset_type must stay inside the enum in ironmonkey-unified/shared/",
+    "stix-extensions/x-ics-asset.json. `services` keys are the forwarder's",
+    "own data_type values, not port names; `default` covers the rest."
+  ],
+  "schema_version": 1,
+  "persona": "s7-317-substation-de",
+  "variant_of": "s7-315-substation",
+  "region": "DACH",
+  "label": "110/20 kV Umspannwerk (DACH), Siemens S7-317-2 PN/DP with IEC 60870-5-104 telecontrol",
+  "sector": "energy",
+  "site_tag": "UW-OST",
+  "assets": {
+    "default": {
+      "asset_type": "plc",
+      "vendor": "Siemens",
+      "model": "S7-317-2 PN/DP"
+    },
+    "services": {
+      "bacnet": {
+        "asset_type": "plc",
+        "vendor": "Siemens",
+        "model": "PXC22.D"
+      },
+      "enip": {
+        "asset_type": "network_device",
+        "vendor": "WAGO",
+        "model": "750-352"
+      }
+    }
+  }
+}

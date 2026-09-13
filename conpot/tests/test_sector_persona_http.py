@@ -48,12 +48,17 @@ _SUCCESS_TELLS = (
 
 
 class _PersonaHttpCase(unittest.TestCase):
-    """Base case. Subclasses set TEMPLATE, REALM, SERVER and SYS_NAME."""
+    """Base case. Subclasses set TEMPLATE, REALM, SERVER and SYS_NAME, and
+    DENIED_TEXT when the persona's rejection page is not in English."""
 
     TEMPLATE = None
     REALM = None
     SERVER = None
     SYS_NAME = None
+    # Lower-cased substring of the /login 403 body. Entities stay literal
+    # (the body is ASCII on the wire), so a German page matches on
+    # "ung&uuml;ltig", not on the rendered umlaut.
+    DENIED_TEXT = "invalid user name or password"
 
     def setUp(self):
         if self.TEMPLATE is None:
@@ -147,7 +152,7 @@ class _PersonaHttpCase(unittest.TestCase):
             data={"username": "operator", "password": "1234"},
         )
         self.assertEqual(403, ret.status_code)
-        self.assertIn("invalid user name or password", ret.text.lower())
+        self.assertIn(self.DENIED_TEXT, ret.text.lower())
 
     def test_hmi_post_is_rejected_the_same_way_as_get(self):
         ret = requests.post(
@@ -179,6 +184,25 @@ class TestSubstationStatusCodes(_PersonaHttpCase):
     REALM = "SIMATIC HMI"
     SERVER = "Siemens CP443-1 Advanced V3.3.0"
     SYS_NAME = "S7-315-SUBSTATION-01"
+
+
+class TestSubstationDeHttp(_PersonaHttpCase):
+    """The DACH variant (step H13). German page bodies are served as ASCII
+    with HTML entities; a fetch is the only way to prove the entity route
+    survived the `str_to_bytes` trap, and that the realm is its own."""
+
+    TEMPLATE = "s7-317-substation-de"
+    REALM = "WinCC Runtime UW-OST"
+    SERVER = "Siemens CP343-1 Advanced V3.0.4"
+    SYS_NAME = "UW-OST-S7-317"
+    DENIED_TEXT = "benutzername oder kennwort ung&uuml;ltig"
+
+    def test_german_page_renders_umlauts_as_entities(self):
+        ret = requests.post(
+            self.base + "/login", data={"username": "a", "password": "b"}
+        )
+        self.assertIn("&uuml;", ret.text)
+        self.assertTrue(ret.content.isascii(), "non-ASCII byte reached the wire")
 
 
 if __name__ == "__main__":

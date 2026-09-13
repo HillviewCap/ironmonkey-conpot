@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BACnet/IP device for the UW-OST DACH substation persona (step H13). Bound
+  on 47808/udp inside and out.
+
+  Same site shape as the base persona: BACnet is not a protection or a
+  metering protocol and would be wrong on the PLC, so it belongs to the
+  building controller watching the relay room -- temperature, humidity,
+  ventilation, door contact. Siemens Schweiz AG (ASHRAE vendor id 7) is the
+  Desigo vendor, and Desigo is the DACH building-automation default, so the
+  vendor is kept and only the model, device name, instance and object names
+  change. In German building automation the controller is the GLT
+  (Gebaeudeleittechnik), hence the device name.
+
+  Element ORDER in device_info is load-bearing: BACnetApp.
+  get_objects_and_properties takes the device identifier positionally, as
+  the second child. Keep device_name first and device_identifier second.
+
+  present_value is read back through ast.literal_eval, so every value stays
+  a bare Python literal.
+-->
+<bacnet enabled="True" host="0.0.0.0" port="47808">
+    <device_info>
+        <device_name>UW-OST-GLT</device_name>
+        <device_identifier>2107</device_identifier>
+        <vendor_name>Siemens Schweiz AG</vendor_name>
+        <vendor_identifier>7</vendor_identifier>
+        <max_apdu_length_accepted>1476</max_apdu_length_accepted>
+        <segmentation_supported>segmentedBoth</segmentation_supported>
+        <model_name>PXC22.D</model_name>
+        <protocol_version>1</protocol_version>
+    </device_info>
+    <object_list>
+        <object name="objectRelaisraumTemp">
+            <properties>
+                <object_identifier>41</object_identifier>
+                <object_name>AI_RAUMTEMP_RELAIS</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>22.8</present_value>
+            </properties>
+        </object>
+        <object name="objectRelaisraumFeuchte">
+            <properties>
+                <object_identifier>42</object_identifier>
+                <object_name>AI_RAUMFEUCHTE</object_name>
+                <object_type>Analog Input</object_type>
+                <present_value>44.5</present_value>
+            </properties>
+        </object>
+        <object name="objectLuefterBetrieb">
+            <properties>
+                <object_identifier>43</object_identifier>
+                <object_name>BI_LUEFTER_BETRIEB</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>1</present_value>
+            </properties>
+        </object>
+        <object name="objectTuerkontakt">
+            <properties>
+                <object_identifier>44</object_identifier>
+                <object_name>BI_TUERKONTAKT</object_name>
+                <object_type>Binary Input</object_type>
+                <present_value>0</present_value>
+            </properties>
+        </object>
+    </object_list>
+</bacnet>

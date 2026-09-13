@@ -36,9 +36,10 @@ deploy/ironmonkey/
 │   └── .env.example
 └── README.md (this file)
 
-conpot/templates/<persona>/       # ← upstream-style location. Three personas
+conpot/templates/<persona>/       # ← upstream-style location. Four personas
                                   #   ship: s7-315-substation (the default),
-                                  #   water-utility, oil-gas-pipeline.
+                                  #   water-utility, oil-gas-pipeline, and the
+                                  #   DACH variant s7-317-substation-de.
 ├── template.xml                  # root: core/template metadata + databus seeds
 ├── ironmonkey/persona.json       # device roster — read by the FORWARDER, not
 │                                 #   by Conpot (step H11)
@@ -55,9 +56,7 @@ conpot/templates/<persona>/       # ← upstream-style location. Three personas
 ├── IEC104/IEC104.xml             # IEC 60870-5-104 ASDU types 1/3/13/30
 ├── snmp/snmp.xml                 # SNMPv2-MIB system group (step H10)
 ├── bacnet/bacnet.xml             # BACnet/IP building controller (step H10)
-├── enip/enip.xml                 # EtherNet/IP identity + tags (step H10)
-└── ssl/                          # substation only: self-signed cert for the
-                                  #   proxy protocol, which no persona serves
+└── enip/enip.xml                 # EtherNet/IP identity + tags (step H10)
 ```
 
 ## Deploy targets
@@ -86,13 +85,16 @@ docker exec ironmonkey-conpot tail -f /var/log/conpot/conpot.json
 
 ## Templates: the sector personas (step H11)
 
-A persona is a SITE, not a device: several emulated boxes behind one address, each answering the protocols it actually speaks. All three serve the same seven protocols on the same ports, because the sensor's published ports and its ufw rules are fleet-wide — a persona changes identity and content, not reach.
+A persona is a SITE, not a device: several emulated boxes behind one address, each answering the protocols it actually speaks. All four serve the same seven protocols on the same ports, because the sensor's published ports and its ufw rules are fleet-wide — a persona changes identity and content, not reach.
 
 | Persona | Sector | Site | Devices |
 |---|---|---|---|
 | `s7-315-substation` | `energy` | `SUBSTATION-01` | S7-315-2 PN/DP (modbus, s7comm, IEC-104, snmp, http) · Desigo PXC4.E16 (bacnet) · 1769-AENTR/B (enip) |
 | `water-utility` | `water_wastewater` | `WTP-01` | MicroLogix 1400 (modbus, enip, http) · S7-1200 + CP 1243-1 (s7comm, IEC-104, snmp) · Metasys NAE5510 (bacnet) |
 | `oil-gas-pipeline` | `oil_gas` | `CS-07` | S7-1500 + TIM 1531 IRC (s7comm, IEC-104, snmp, http) · Emerson ROC809 (modbus) · 1734-AENTR (enip) · FX-PCX27 (bacnet) |
+| `s7-317-substation-de` | `energy` (variant of `s7-315-substation`) | `UW-OST` | S7-317-2 PN/DP (modbus, s7comm, IEC-104, snmp, http) · Desigo PXC22.D (bacnet) · WAGO 750-352 (enip) |
+
+`s7-317-substation-de` (step H13, Decision 19) is a **regional variant**, not a fourth sector: a 110/20 kV Umspannwerk for the Western Europe sensor, German page bodies (served as ASCII with HTML entities — Conpot's GET path cannot serve a raw umlaut), a CP343-1 banner coherent with an S7-300 CPU, and every attacker-visible constant re-rolled so a cross-sensor search on any one of them does not return the New York sensor. It is a CPU 317 rather than a second 315 because the forwarder test forbids two personas sharing vendor+model on any protocol (that triple seeds the `x-ics-asset` uuid5). Its manifest carries `variant_of` and `region`, which the forwarder ignores and the structural test uses to exempt it from the one-persona-per-sector rule.
 
 `s7-315-substation` is the default and the persona every sensor ran before H11; it is designed as an INDUSTROYER/CRASHOVERRIDE trap. On every persona, IEC-104 ASDU types 1 (M_SP_NA_1) / 3 (M_DP_NA_1) / 13 (M_ME_NC_1) / 30 (M_SP_TB_1) are exposed as monitored telemetry; command-type ASDUs (45/46/50/58) trigger via incoming commands and are the highest-signal captures.
 

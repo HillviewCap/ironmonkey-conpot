@@ -1,0 +1,47 @@
+<!--
+  Modbus/TCP - auxiliary-supply power metering on the UW-OST S7-317
+  (DACH substation persona, step H13).
+
+  Slave id=1 exposes 10 HOLDING_REGISTERS (FC-3 read) at addr 0..9 backed by
+  the `hr_uw_block` databus list key (root template.xml), and 16 COILS (FC-1
+  read) at addr 0..15 backed by `coil_block`.
+
+  Loader contract (same as the base persona): the block `name` attribute IS
+  the databus key; the <content> child exists for XSD compliance only. The
+  device_info tags are CamelCase per conpot/protocols/modbus/modbus.xsd.
+
+  <delay> differs from the base persona's 100 ms on purpose: a uniform,
+  fleet-wide response latency is itself a correlation signal.
+-->
+<modbus enabled="True" host="0.0.0.0" port="5020">
+    <device_info>
+        <VendorName>Siemens AG</VendorName>
+        <ProductCode>S7-317-2EK14</ProductCode>
+        <MajorMinorRevision>V3.2.12</MajorMinorRevision>
+    </device_info>
+    <mode>serial</mode>
+    <delay>80</delay>
+    <slaves>
+        <slave id="1">
+            <blocks>
+                <block name="hr_uw_block">
+                    <!-- 10 metering registers: voltage L1/L2/L3, current,
+                         frequency, power factor, active power, energy hi/lo,
+                         status word. -->
+                    <type>HOLDING_REGISTERS</type>
+                    <starting_address>0</starting_address>
+                    <size>10</size>
+                    <content>hr_uw_block</content>
+                </block>
+                <block name="coil_block">
+                    <!-- 16-coil block (Leistungsschalter / Trenner image).
+                         Coil writes get logged. -->
+                    <type>COILS</type>
+                    <starting_address>0</starting_address>
+                    <size>16</size>
+                    <content>coil_block</content>
+                </block>
+            </blocks>
+        </slave>
+    </slaves>
+</modbus>
