@@ -7,7 +7,7 @@
   Same node set and the same H4 credential-bait contract as the base persona
   (/hmi/ answers 401 with a Basic challenge, /login answers 403, no
   credential comparison exists anywhere). Only the banner, the realm, the
-  dates and the page bodies differ -- the realm is test-enforced to be
+  dates and the page bodies differ - the realm is test-enforced to be
   distinct across personas, because two sensors answering with the same
   realm correlate the fleet on one unauthenticated GET.
 
@@ -15,7 +15,7 @@
   X-Powered-By are set per node. Date stays global so update_header_date
   refreshes it live.
 
-  No /tests/unittest_* nodes -- upstream-Conpot dev fixtures and a known
+  No /tests/unittest_* nodes - upstream-Conpot dev fixtures and a known
   fingerprint.
 -->
 <http enabled="True" host="0.0.0.0" port="8800">

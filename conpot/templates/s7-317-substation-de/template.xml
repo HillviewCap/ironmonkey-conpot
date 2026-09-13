@@ -2,10 +2,10 @@
 <!--
   IronMonkey S7-317-2 PN/DP DACH substation template (Conpot 0.6.0
   directory-tree form). Phase 2 step H13 / Decision 19: the Western Europe
-  sensor. A regional VARIANT of s7-315-substation -- same sector (energy),
+  sensor. A regional VARIANT of s7-315-substation - same sector (energy),
   same seven protocols on the same seven ports, same site shape (one PLC for
   telecontrol and protection coupling, one building controller on BACnet,
-  one third-party I/O coupler on EtherNet/IP) -- with every attacker-visible
+  one third-party I/O coupler on EtherNet/IP) - with every attacker-visible
   identity constant re-rolled, so a cross-sensor search on any one value
   (S7 serial, plant id, sysName, BACnet device, ENIP serial, HTTP realm,
   register block) does not return the New York sensor as well.
@@ -25,7 +25,7 @@
   persona (already European), re-rolled so a register dump differs.
 
   OPSEC: zero upstream-Conpot default seed strings; no `as` (Automation
-  System) element. Every served string is ASCII -- German text with umlauts
+  System) element. Every served string is ASCII - German text with umlauts
   lives only in the HTTP pages, as HTML entities, because Conpot's GET path
   ASCII-encodes the body after the headers have gone out. See
   deploy/ironmonkey/README.md "OPSEC scrub rules".

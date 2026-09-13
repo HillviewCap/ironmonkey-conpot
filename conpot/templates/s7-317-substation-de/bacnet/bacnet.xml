@@ -5,7 +5,7 @@
 
   Same site shape as the base persona: BACnet is not a protection or a
   metering protocol and would be wrong on the PLC, so it belongs to the
-  building controller watching the relay room -- temperature, humidity,
+  building controller watching the relay room - temperature, humidity,
   ventilation, door contact. Siemens Schweiz AG (ASHRAE vendor id 7) is the
   Desigo vendor, and Desigo is the DACH building-automation default, so the
   vendor is kept and only the model, device name, instance and object names
