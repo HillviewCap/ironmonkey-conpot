@@ -31,6 +31,7 @@ one of them:
 
 import json
 import os
+import re
 import unittest
 
 from lxml import etree
@@ -86,6 +87,61 @@ def _manifest(persona):
     path = os.path.join(_template_dir(persona), "ironmonkey", "persona.json")
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+# W1-02 signature list: strings that tie a persona to the upstream Conpot
+# default templates or to a known scanner fingerprint. Matched against SERVED
+# text only (see _served_blob).
+SIGNATURE_STRINGS = (
+    "88111222",
+    "00:13:EA:00:00:00",
+    "7079450",
+    "19 May 1993",
+    "28 Apr 1984",
+    "SAAP7-SERVER",
+    "MMC 267FF11F",
+    "S C-C2UR28922012",
+    "/tests/unittest_",
+    "IM151-8 PN/DP CPU",
+    "CP 443-1 EX40",
+    "Venus",
+)
+
+# (persona, string) pairs excused from the signature list, with the reason.
+# s7-317-substation-de is the Wave 1 control and must never be what keeps CI
+# red; water-utility and oil-gas-pipeline are outside Wave 1 scope.
+_OUT_OF_SCOPE = "outside Wave 1 scope (Date seed still Conpot's 1984 default)"
+SIGNATURE_EXEMPTIONS = {
+    ("water-utility", "28 Apr 1984"): _OUT_OF_SCOPE,
+    ("oil-gas-pipeline", "28 Apr 1984"): _OUT_OF_SCOPE,
+}
+
+# The coherence checks are scoped to this persona. s7-317-substation-de is
+# exempt from them BY NAME: "Wave 1 control, frozen until readout" -- its short
+# serial and free-text sysDescr are deliberate. It trips no signature string
+# today, so SIGNATURE_EXEMPTIONS holds no entry for it; add one here, with the
+# same reason, if that changes.
+COHERENCE_PERSONA = "s7-315-substation"
+
+
+def _served_blob(persona):
+    """Everything a persona SERVES: XML element text and attribute values with
+    comments stripped, plus every htdocs and statuscodes body."""
+    served = []
+    for root, _dirs, files in os.walk(_template_dir(persona)):
+        for name in files:
+            path = os.path.join(root, name)
+            if name.endswith(".xml"):
+                tree = etree.parse(path)
+                etree.strip_elements(tree, etree.Comment, with_tail=False)
+                for element in tree.getroot().iter():
+                    if isinstance(element.tag, str):
+                        served.append(element.text or "")
+                        served.extend(element.attrib.values())
+            elif name.endswith((".html", ".status")):
+                with open(path, encoding="utf-8") as fh:
+                    served.append(fh.read())
+    return "\n".join(served)
 
 
 class TestSectorPersonas(unittest.TestCase):
@@ -372,28 +428,69 @@ class TestSectorPersonas(unittest.TestCase):
             "Siemens, SIMATIC, S7-200",
             "Mouser Factory",
             "Technodrome",
-            "Original Siemens Equipment",
             "1756-L61/B LOGIX5561",
             "VAV-DD Controller",
-        )
+        ) + SIGNATURE_STRINGS
         for persona in PERSONAS:
-            served = []
-            for root, _dirs, files in os.walk(_template_dir(persona)):
-                for name in files:
-                    path = os.path.join(root, name)
-                    if name.endswith(".xml"):
-                        tree = etree.parse(path)
-                        etree.strip_elements(tree, etree.Comment, with_tail=False)
-                        for element in tree.getroot().iter():
-                            if isinstance(element.tag, str):
-                                served.append(element.text or "")
-                                served.extend(element.attrib.values())
-                    elif name.endswith((".html", ".status")):
-                        with open(path, encoding="utf-8") as fh:
-                            served.append(fh.read())
-            blob = "\n".join(served)
+            blob = _served_blob(persona)
             for needle in forbidden:
+                if (persona, needle) in SIGNATURE_EXEMPTIONS:
+                    continue
                 self.assertNotIn(needle, blob, "%s serves %r" % (persona, needle))
+
+    # ── Coherence: s7-315-substation (W1-02, Wave 1 scope) ───────────────────
+    # 'Original Siemens Equipment' is deliberately NOT forbidden anywhere: it
+    # is Siemens's own SZL Copyright string, and a missing value is a tell.
+
+    def _s7_315_databus(self, key):
+        root = etree.parse(
+            os.path.join(_template_dir(COHERENCE_PERSONA), "template.xml")
+        ).getroot()
+        for element in root.iter("key"):
+            if element.get("name") == key:
+                return element.findtext("value").strip().strip("'")
+        self.fail("%s template.xml has no databus key %r" % (COHERENCE_PERSONA, key))
+
+    def test_s7_315_copyright_is_the_siemens_string(self):
+        self.assertEqual(
+            "Original Siemens Equipment", self._s7_315_databus("Copyright")
+        )
+
+    def test_s7_315_no_cp443_beside_an_s7_300_mlfb(self):
+        """CP 443-1 is an S7-400 communications processor; it cannot front a
+        6ES7 31x CPU."""
+        blob = _served_blob(COHERENCE_PERSONA)
+        self.assertRegex(blob, r"6ES7 ?31\d")
+        self.assertNotRegex(blob, r"CP ?443")
+
+    def test_s7_315_last_modified_is_2005_or_later(self):
+        root = etree.parse(_protocol_file(COHERENCE_PERSONA, "http")).getroot()
+        dates = [
+            e.text for e in root.iter("entity") if e.get("name") == "Last-Modified"
+        ]
+        self.assertTrue(dates)
+        for value in dates:
+            year = int(re.search(r"\b(\d{4})\b", value).group(1))
+            self.assertGreaterEqual(year, 2005, value)
+
+    def test_s7_315_sysdescr_has_the_siemens_shape(self):
+        descr = self._s7_315_databus("sysDescription")
+        self.assertTrue(descr.startswith("Siemens, SIMATIC S7,"), descr)
+        self.assertGreaterEqual(len(descr.split(",")), 5, descr)
+
+    def test_s7_315_serial_matches_the_real_shape(self):
+        serial = self._s7_315_databus("SerialNumber")
+        self.assertRegex(serial, r"^S [CQ]-[A-Z0-9]{12}$")
+
+    def test_s7_315_frequency_register_agrees_with_grid_hz(self):
+        manifest = _manifest(COHERENCE_PERSONA)
+        self.assertIn(
+            "grid_hz",
+            manifest,
+            "%s persona.json has no grid_hz (added by W1-03)" % COHERENCE_PERSONA,
+        )
+        register = int(self._s7_315_databus("hr_frequency"))
+        self.assertEqual(manifest["grid_hz"] * 10, register)
 
     # ── The persona manifest the forwarder reads ─────────────────────────────
 
