@@ -195,7 +195,7 @@ class IEC104(object):
         except InvalidFieldValueException as ex:
             logger.warning("InvalidFieldValue: %s. (%s)", ex, self.session_id)
 
-    def _record_asdu_event(self, container, type_id):
+    def _record_asdu_event(self, container, type_id, frame=None):
         """Log the ASDU's type/cot/ioa so the session carries real protocol
         detail instead of only NEW_CONNECTION/CONNECTION_LOST.
 
@@ -209,8 +209,16 @@ class IEC104(object):
         AttributeError -- ordinary probing traffic (a bogus or unsupported
         type_id), not a fault, so it degrades to whatever was extracted
         rather than dropping the event.
+
+        `raw` is the I-frame itself (APCI + ASDU) as lowercase hex, so the
+        forwarder can keep the exact bytes (Wave 1, W1-09). It sits inside
+        `request` because the JSON logger exports nothing else from the
+        event. An I-frame is at most 255 bytes, well inside the forwarder's
+        512-byte cap.
         """
         request = {"type_id": type_id}
+        if frame:
+            request["raw"] = bytes(frame).hex()
         try:
             request["cot"] = container.getfieldval("COT")
         except AttributeError:
@@ -284,7 +292,7 @@ class IEC104(object):
         request_coa = container.getfieldval("COA")
 
         if self.session is not None:
-            self._record_asdu_event(container, type_id)
+            self._record_asdu_event(container, type_id, frame)
 
         # 45: Single command
         if type_id == TypeIdentification["C_SC_NA_1"] and request_coa == common_address:

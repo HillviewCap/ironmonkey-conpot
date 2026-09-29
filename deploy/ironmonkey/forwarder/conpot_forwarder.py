@@ -955,6 +955,72 @@ def _parse_enip_request(request: Any) -> dict[str, Any]:
     return _map_fields(request, _ENIP_FIELDS)
 
 
+# ── Raw PDU retention (Wave 1, W1-09) ────────────────────────────────────────
+#
+# The exact bytes of a Modbus, S7 or IEC-104 exchange, as lowercase hex, so a
+# parser that is wrong today -- or a field nobody parses yet -- can be
+# recovered from the stored row instead of being lost with the exchange.
+# The STIX writer puts them in `honeypot_commands.raw_request` /
+# `raw_response` (BYTEA), never in the session JSONB.
+#
+# Only these three protocols. SNMP is left out for volume, HTTP is already
+# parsed field by field under its own caps, and BACnet and EtherNet/IP leave
+# the substation persona in W1-04.
+#
+# What each protocol's log actually holds:
+#   Modbus  request  = the full ADU (MBAP + PDU), as received.
+#           response = the response PDU only, with no MBAP header: that is
+#                      what slave_db.handle_request logs. It is empty, and
+#                      so omitted, when slave_db itself built the exception
+#                      reply (a unit id other than 0/255 on TCP).
+#   S7      request / response = the full TPKT frames, CR/CC included.
+#   IEC-104 request  = the I-frame (APCI + ASDU), which the fork's
+#                      `_record_asdu_event` logs as `raw`. Conpot logs no
+#                      IEC-104 response, so there is none to forward.
+
+# 512 bytes. IronPot and the STIX writer hold the field to the same cap, and
+# a value longer than it is DROPPED there, not cut -- so the cut happens here,
+# where it can be flagged.
+_MAX_RAW_HEX_CHARS = 1024
+
+
+def _attach_raw_hex(parsed: dict[str, Any], prefix: str, raw: bytes | None) -> None:
+    """Set `<prefix>_hex`, cut at `_MAX_RAW_HEX_CHARS` with `<prefix>_truncated`.
+
+    The cap is even, so a cut value is still whole bytes. The flag is only
+    ever set True -- absent means the bytes are complete, the same convention
+    as `values_truncated`.
+    """
+    if not raw:
+        return
+    hex_text = raw.hex()
+    if len(hex_text) > _MAX_RAW_HEX_CHARS:
+        parsed[f"{prefix}_truncated"] = True
+        hex_text = hex_text[:_MAX_RAW_HEX_CHARS]
+    parsed[f"{prefix}_hex"] = hex_text
+
+
+def _attach_raw_pdus(parsed: dict[str, Any], request: Any, response: Any) -> None:
+    """Raw request/response hex from Conpot's logged `b'...'` values."""
+    _attach_raw_hex(parsed, "raw_request", _decode_logged_hex(request))
+    _attach_raw_hex(parsed, "raw_response", _decode_logged_hex(response))
+
+
+def _parse_iec104_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Flatten the fork's dict-shaped IEC-104 ASDU record.
+
+    `type_id`/`cot`/`ioa` pass through as they always have (None is dropped
+    by the caller). `raw` is the I-frame hex `_record_asdu_event` adds.
+    """
+    parsed: dict[str, Any] = {
+        "type_id": request.get("type_id"),
+        "cot": request.get("cot"),
+        "ioa": request.get("ioa"),
+    }
+    _attach_raw_hex(parsed, "raw_request", _decode_logged_hex(request.get("raw")))
+    return parsed
+
+
 # Which emulated DEVICE the attacker reached.
 #
 # A persona is a SITE, not a box: several emulated devices behind one address,
@@ -1195,10 +1261,9 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
             for key in _MODBUS_DICT_KEYS:
                 if key in request:
                     protocol_data[key] = request[key]
+        _attach_raw_pdus(protocol_data, request, record.get("response"))
     elif data_type in ("iec104", "iec-104") and isinstance(request, dict):
-        protocol_data["type_id"] = request.get("type_id")
-        protocol_data["cot"] = request.get("cot")
-        protocol_data["ioa"] = request.get("ioa")
+        protocol_data.update(_parse_iec104_request(request))
     elif data_type == "s7comm":
         # `request` is a string like `b'0300...'` in every version observed
         # so far -- the `isinstance(request, dict)` branch this replaces
@@ -1209,6 +1274,7 @@ def _map_record(record: dict[str, Any]) -> dict[str, Any] | None:
             fn = request.get("function")
             if fn is not None:
                 protocol_data["s7_function"] = fn
+        _attach_raw_pdus(protocol_data, request, record.get("response"))
     elif data_type == "http":
         method = record.get("method")
         if isinstance(method, str) and method:

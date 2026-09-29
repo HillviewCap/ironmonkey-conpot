@@ -877,6 +877,162 @@ class TestS7UserdataAndCotp:
         assert type(pd["s7_szl_id"]) is int
 
 
+# ── W1-09: raw PDU retention ─────────────────────────────────────────────────
+#
+# Records exactly as the fork (main 3139710, default template) logged them on
+# loopback on 2026-09-29, driven with nmap s7-info's frames and the lab-bench
+# Modbus FC6 above. The S7 response is the full TPKT frame Conpot sent; the
+# Modbus response is the PDU only, which is what slave_db logs (the wire reply
+# was 000600000003018602).
+CONPOT_LOGGED_S7_CR = {
+    "request": NMAP_S7_INFO_COTP_CR,
+    "response": "b'030000130ed00000000000c1020000c2020000'",
+}
+CONPOT_LOGGED_S7_SZL_0011 = {
+    "request": NMAP_S7_INFO_SZL_0011,
+    "response": (
+        "b'0300004102f080320700000000000800280001120812840101ff0900240011000100"
+        "1c000100010000000000000000000000000000000000000000000000000000'"
+    ),
+}
+CONPOT_LOGGED_MODBUS_FC6 = {"request": REAL_FC6, "response": "b'8602'"}
+
+# IEC-104 I-frames from the c104 2.2.1 (lib60870-C) client, captured on
+# loopback through a logging proxy on 2026-09-29 against a c104 server with
+# common address 1. The single command's point is SELECT_AND_EXECUTE, so the
+# client sent a select (S/E = 1) and, after the positive ACT_CON, an execute.
+#                         APCI         type SQ/N COT  OA  COA   IOA     SCO
+C104_C_SC_NA_1_SELECT = "680e00000000" "2d" "01" "06" "00" "0100" "881300" "81"
+C104_C_SC_NA_1_EXECUTE = "680e02000200" "2d" "01" "06" "00" "0100" "881300" "01"
+#                         APCI         type SQ/N COT  OA  COA   IOA     DCO
+C104_C_DC_NA_1_ON = "680e04000600" "2e" "01" "06" "00" "0100" "891300" "02"
+#                         APCI         type SQ/N COT  OA  COA   IOA     float 110.5  QOS
+C104_C_SE_NC_1 = "681206000800" "32" "01" "06" "00" "0100" "8a1300" "0000dd42" "00"
+#                         APCI         type SQ/N COT  OA  COA   IOA     SVA -1234 QOS
+C104_C_SE_NB_1 = "681008000a00" "31" "01" "06" "00" "0100" "8b1300" "2efb" "00"
+#                         APCI         type SQ/N COT  OA  COA   IOA     QOI
+C104_C_IC_NA_1 = "680e0a000c00" "64" "01" "06" "00" "0100" "000000" "14"
+
+RAW_KEYS = {
+    "raw_request_hex",
+    "raw_response_hex",
+    "raw_request_truncated",
+    "raw_response_truncated",
+}
+
+
+class TestRawPduRetention:
+    @staticmethod
+    def _map(data_type, request, response=None, dst_port=10201):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            return cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": data_type,
+                    "src_ip": "203.0.113.9",
+                    "dst_port": dst_port,
+                    "request": request,
+                    "response": response,
+                    "id": "sess-w1-09",
+                }
+            )["protocol_data"]
+
+    @staticmethod
+    def _hex(logged: str) -> str:
+        return logged[2:-1]
+
+    @pytest.mark.parametrize("logged", [CONPOT_LOGGED_S7_CR, CONPOT_LOGGED_S7_SZL_0011])
+    def test_s7_request_and_response_are_kept_whole(self, logged):
+        pd = self._map("s7comm", logged["request"], logged["response"])
+        assert pd["raw_request_hex"] == self._hex(logged["request"])
+        assert pd["raw_response_hex"] == self._hex(logged["response"])
+        assert "raw_request_truncated" not in pd
+        assert "raw_response_truncated" not in pd
+
+    def test_modbus_request_is_the_adu_and_response_the_pdu(self):
+        pd = self._map(
+            "modbus",
+            CONPOT_LOGGED_MODBUS_FC6["request"],
+            CONPOT_LOGGED_MODBUS_FC6["response"],
+            dst_port=5020,
+        )
+        assert pd["raw_request_hex"] == "0006000000060106001000ff"
+        assert pd["raw_response_hex"] == "8602"
+        assert pd["written_value"] == 0x00FF  # the parse is untouched
+
+    def test_an_empty_logged_response_is_omitted(self):
+        """slave_db logs b'' when it built the exception reply itself."""
+        pd = self._map("modbus", REAL_FC3, "b''", dst_port=5020)
+        assert "raw_response_hex" not in pd
+        assert pd["raw_request_hex"] == self._hex(REAL_FC3)
+
+    def test_cut_at_1024_hex_chars_and_flagged(self):
+        """A scanner pipelining 16 SZL reads lands in one 1024-byte recv():
+        528 bytes, past the 512-byte cap. Only the first frame is parsed."""
+        pipelined = "b'" + self._hex(NMAP_S7_INFO_SZL_0011) * 16 + "'"
+        pd = self._map("s7comm", pipelined, pipelined)
+        for side in ("request", "response"):
+            assert len(pd[f"raw_{side}_hex"]) == 1024
+            assert pd[f"raw_{side}_truncated"] is True
+            assert pd[f"raw_{side}_hex"] == self._hex(pipelined)[:1024]
+        assert pd["s7_szl_id"] == 0x0011
+
+    def test_exactly_512_bytes_is_not_truncated(self):
+        body = self._hex(NMAP_S7_INFO_SZL_0011) * 16  # 528 bytes
+        exact = "b'" + body[:1024] + "'"
+        pd = self._map("s7comm", exact)
+        assert len(pd["raw_request_hex"]) == 1024
+        assert "raw_request_truncated" not in pd
+
+    def test_hex_is_lowercase_and_even_length(self):
+        """Conpot's codecs output is already lowercase; a bare upper-case hex
+        string (the shape a future log format might carry) is normalized."""
+        upper = self._hex(NMAP_S7_INFO_SZL_0011).upper()
+        pd = self._map("s7comm", upper)
+        assert pd["raw_request_hex"] == self._hex(NMAP_S7_INFO_SZL_0011)
+        assert pd["raw_request_hex"] == pd["raw_request_hex"].lower()
+        assert len(pd["raw_request_hex"]) % 2 == 0
+
+    @pytest.mark.parametrize("logged", ["b'030'", "b'zz'", "not hex", None, 7])
+    def test_non_hex_is_not_forwarded(self, logged):
+        pd = self._map("s7comm", logged, logged)
+        assert not RAW_KEYS & set(pd)
+
+    @pytest.mark.parametrize(
+        "data_type, logged, dst_port",
+        [
+            ("snmp", {"command": "get", "oid": "1.3.6.1.2.1.1.1.0"}, 16100),
+            ("bacnet", {"service": "whoIs", "raw": "810b000c"}, 47808),
+            ("enip", {"enip_command": 0x63, "raw": "6300"}, 44818),
+            ("http", "('/', [], None)", 8800),
+        ],
+    )
+    def test_never_for_snmp_http_bacnet_or_enip(self, data_type, logged, dst_port):
+        pd = self._map(data_type, logged, "b'0300001611'", dst_port=dst_port)
+        assert not RAW_KEYS & set(pd)
+
+    def test_iec104_request_raw_is_forwarded_without_a_response(self):
+        raw = C104_C_SC_NA_1_SELECT
+        pd = self._map(
+            "iec104",
+            {"type_id": 45, "cot": 6, "ioa": 5000, "raw": raw},
+            None,
+            dst_port=2404,
+        )
+        assert pd["raw_request_hex"] == raw
+        assert "raw_response_hex" not in pd
+        assert (pd["type_id"], pd["cot"], pd["ioa"]) == (45, 6, 5000)
+
+    def test_iec104_record_without_raw_is_unchanged(self):
+        """A record from an image predating W1-09 maps as it always has."""
+        pd = self._map(
+            "iec104", {"type_id": 100, "cot": 6, "ioa": 0}, None, dst_port=2404
+        )
+        assert not RAW_KEYS & set(pd)
+        assert pd["type_id"] == 100
+
+
 class TestHttpParse:
     """`_parse_http_request` — the stringified (path, headers, body) tuple."""
 

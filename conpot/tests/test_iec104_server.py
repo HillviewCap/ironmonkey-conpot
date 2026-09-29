@@ -22,7 +22,9 @@ import time
 import unittest
 from unittest.mock import patch
 import conpot.core as conpot_core
+from types import SimpleNamespace
 from conpot.protocols.IEC104 import IEC104_server, frames
+from conpot.protocols.IEC104.IEC104 import IEC104
 from conpot.utils.greenlet import spawn_test_server, teardown_test_server
 
 
@@ -282,6 +284,8 @@ class TestIEC104Server(unittest.TestCase):
         self.assertEqual(45, request["type_id"])  # C_SC_NA_1, single command
         self.assertEqual(6, request["cot"])  # activation
         self.assertEqual(0x131600, request["ioa"])
+        # W1-09: the I-frame itself, as received.
+        self.assertEqual(single_command.build().hex(), request["raw"])
 
         s.close()
 
@@ -304,3 +308,64 @@ class TestIEC104Server(unittest.TestCase):
         self.assertEqual("CONNECTION_LOST", con_lost_event["data"]["type"])
 
         s.close()
+
+
+# IEC-104 I-frames from the c104 2.2.1 (lib60870-C) client, captured on
+# loopback through a logging proxy on 2026-09-29 against a c104 server with
+# common address 1 (the same frames the forwarder tests use). The single
+# command's point is SELECT_AND_EXECUTE, so the client sent a select (S/E = 1)
+# and, after the positive ACT_CON, an execute (S/E = 0).
+C104_C_SC_NA_1_SELECT = "680e000000002d010600010088130081"
+C104_C_SC_NA_1_EXECUTE = "680e020002002d010600010088130001"
+C104_C_DC_NA_1_ON = "680e040006002e010600010089130002"
+C104_C_SE_NC_1 = "6812060008003201060001008a13000000dd4200"  # 110.5
+C104_C_SE_NB_1 = "681008000a003101060001008b13002efb00"  # -1234
+C104_C_IC_NA_1 = "680e0a000c0064010600010000000014"  # QOI 20
+
+
+class _RecordingSession:
+    def __init__(self):
+        self.events = []
+
+    def add_event(self, event):
+        self.events.append(event)
+
+
+def _logged_request(frame_hex):
+    """What `_record_asdu_event` logs for one real I-frame, no socket needed."""
+    frame = bytes.fromhex(frame_hex)
+    container = frames.i_frame(frame)
+    handler = SimpleNamespace(session=_RecordingSession())
+    IEC104._record_asdu_event(
+        handler, container, container.getfieldval("TypeID"), frame
+    )
+    (event,) = handler.session.events
+    return event["request"]
+
+
+class TestRecordAsduEvent(unittest.TestCase):
+    """The logged ASDU record, from real client frames (Wave 1, W1-09)."""
+
+    def test_raw_is_the_i_frame_as_lowercase_hex(self):
+        for frame_hex in (
+            C104_C_SC_NA_1_SELECT,
+            C104_C_SC_NA_1_EXECUTE,
+            C104_C_SE_NC_1,
+            C104_C_IC_NA_1,
+        ):
+            request = _logged_request(frame_hex)
+            self.assertEqual(frame_hex, request["raw"])
+
+    def test_existing_fields_are_unchanged(self):
+        request = _logged_request(C104_C_SC_NA_1_SELECT)
+        self.assertEqual(45, request["type_id"])
+        self.assertEqual(6, request["cot"])
+        self.assertEqual(5000, request["ioa"])
+
+    def test_no_frame_no_raw(self):
+        """The old two-argument call still works and logs no `raw`."""
+        frame = bytes.fromhex(C104_C_IC_NA_1)
+        container = frames.i_frame(frame)
+        handler = SimpleNamespace(session=_RecordingSession())
+        IEC104._record_asdu_event(handler, container, 100)
+        self.assertNotIn("raw", handler.session.events[0]["request"])
