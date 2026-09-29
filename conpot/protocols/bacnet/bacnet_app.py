@@ -328,9 +328,7 @@ class BACnetApp(BIPSimpleApplication):
             # Previously this fell out of the loop leaving `self._response`
             # untouched, so the server re-sent whatever it had answered the
             # PREVIOUS caller -- a cross-client leak as well as a wrong reply.
-            logger.info(
-                "Bacnet ReadProperty: no such object %s", (object_identifier,)
-            )
+            logger.info("Bacnet ReadProperty: no such object %s", (object_identifier,))
             self._error_response(address, invoke_key)
             return
 
@@ -627,9 +625,11 @@ class BACnetApp(BIPSimpleApplication):
                 "Bacnet response sent to %s:%s (%s, %s) over %s",
                 address[0],
                 address[1],
-                apdu_types.get(response_apdu.apduType).__name__
-                if apdu_types.get(response_apdu.apduType)
-                else response_apdu.apduType,
+                (
+                    apdu_types.get(response_apdu.apduType).__name__
+                    if apdu_types.get(response_apdu.apduType)
+                    else response_apdu.apduType
+                ),
                 self._response_service,
                 "Original-Broadcast-NPDU" if broadcast else "Original-Unicast-NPDU",
             )

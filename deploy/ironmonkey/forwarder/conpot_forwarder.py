@@ -68,22 +68,24 @@ DEAD_LETTER_PATH = os.environ.get(
 # Soft size cap. When the spool grows past this many bytes, rotate the file
 # to <path>.1 (clobbering any prior .1) and start fresh. Bounds on-disk usage
 # at 2x cap. 0 disables rotation (file grows unboundedly). Default 50 MB.
-MAX_DEAD_LETTER_BYTES = int(os.environ.get("MAX_DEAD_LETTER_BYTES", str(50 * 1024 * 1024)))
+MAX_DEAD_LETTER_BYTES = int(
+    os.environ.get("MAX_DEAD_LETTER_BYTES", str(50 * 1024 * 1024))
+)
 
 # Conpot binds internally to non-privileged ports; the host exposes standard
 # OT ports via Docker port mappings. Conpot's log records local.port from the
 # inside, so we normalize to the standard port the attacker actually hit.
 _PORT_MAP: dict[int, int] = {
-    5020: 502,    # Modbus/TCP
-    10201: 102,   # S7Comm (ISO-TSAP)
-    2404: 2404,   # IEC-104 (same)
-    8800: 80,     # HTTP SCADA
+    5020: 502,  # Modbus/TCP
+    10201: 102,  # S7Comm (ISO-TSAP)
+    2404: 2404,  # IEC-104 (same)
+    8800: 80,  # HTTP SCADA
     # Phase 2 step H10. SNMP has to move: Conpot runs unprivileged so it
     # cannot bind 161, and snmp.xsd types the port attribute as xs:short so
     # the internal port has to stay under 32768 as well. BACnet and
     # EtherNet/IP already sit above 1024, so their internal and published
     # ports are the same; the identity entries are kept for the documentation.
-    16100: 161,    # SNMP
+    16100: 161,  # SNMP
     47808: 47808,  # BACnet/IP
     44818: 44818,  # EtherNet/IP
 }
@@ -932,9 +934,7 @@ def load_persona_assets(
 
     default_asset = _clean_asset(assets.get("default"))
     if default_asset is None:
-        log.warning(
-            "persona_manifest_no_default_asset", path=path, template=template
-        )
+        log.warning("persona_manifest_no_default_asset", path=path, template=template)
         return dict(_FALLBACK_DEFAULT_ASSET), dict(_FALLBACK_ASSET_BY_SERVICE)
 
     by_service: dict[str, dict[str, Any]] = {}
@@ -1217,7 +1217,11 @@ def _post_event(event: dict[str, Any]) -> bool:
     _write_dead_letter(
         event,
         reason="retries_exhausted",
-        detail={"attempts": POST_MAX_RETRIES, "last_status": last_status, "last_error": last_err},
+        detail={
+            "attempts": POST_MAX_RETRIES,
+            "last_status": last_status,
+            "last_error": last_err,
+        },
     )
     return False
 

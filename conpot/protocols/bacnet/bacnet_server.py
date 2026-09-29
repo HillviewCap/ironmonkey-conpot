@@ -114,9 +114,7 @@ class BacnetServer(object):
             try:
                 decoded = bvlc.unwrap(data)
             except bvlc.BvlcError as exc:
-                logger.warning(
-                    "Bacnet BVLC decode failed from %s: %s", address[0], exc
-                )
+                logger.warning("Bacnet BVLC decode failed from %s: %s", address[0], exc)
                 session.add_event({"type": "CONNECTION_FAILED"})
                 return
 
@@ -146,9 +144,7 @@ class BacnetServer(object):
             # event a BACnet session ever carried was the NEW_CONNECTION above
             # -- a Who-Is sweep and a WriteProperty against the plant left
             # identical, empty records by the time they reached the forwarder.
-            self.bacnet_app.indication(
-                apdu, address, self.thisDevice, session=session
-            )
+            self.bacnet_app.indication(apdu, address, self.thisDevice, session=session)
             # send an appropriate response from BACnet app to the attacker
             self.bacnet_app.response(
                 self.bacnet_app._response, address, link=decoded.link

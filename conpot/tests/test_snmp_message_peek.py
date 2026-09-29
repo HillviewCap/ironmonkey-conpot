@@ -70,7 +70,9 @@ class TestSnmpMessagePeek(unittest.TestCase):
         header fragment as though an attacker had typed it.
         """
         # SEQUENCE { INTEGER 3, SEQUENCE { ... } } -- the start of any v3 msg.
-        v3 = bytes([0x30, 0x0A, 0x02, 0x01, 0x03, 0x30, 0x05, 0x02, 0x03, 0x01, 0x02, 0x03])
+        v3 = bytes(
+            [0x30, 0x0A, 0x02, 0x01, 0x03, 0x30, 0x05, 0x02, 0x03, 0x01, 0x02, 0x03]
+        )
         version, community = message_peek.peek(v3)
         self.assertEqual(3, version)
         self.assertIsNone(community)
@@ -106,8 +108,9 @@ class TestSnmpMessagePeek(unittest.TestCase):
         message_peek.clear()
         self.assertIsNone(message_peek.current_for(("10.0.0.1", 1234)))
 
-        message_peek.observe(_v1arch_get(api.SNMP_VERSION_2C, "public"),
-                             ("10.0.0.1", 1234))
+        message_peek.observe(
+            _v1arch_get(api.SNMP_VERSION_2C, "public"), ("10.0.0.1", 1234)
+        )
         self.assertIsNotNone(message_peek.current_for(("10.0.0.1", 1234)))
         self.assertIsNone(message_peek.current_for(("10.0.0.2", 1234)))
         message_peek.clear()
@@ -123,4 +126,6 @@ class TestSnmpMessagePeek(unittest.TestCase):
         # A different source has its own budget within the same minute.
         self.assertTrue(budget.allow("203.0.113.10", now=now))
         # The next minute discards the whole table rather than ageing entries.
-        self.assertTrue(budget.allow("203.0.113.9", now=now + datetime.timedelta(minutes=1)))
+        self.assertTrue(
+            budget.allow("203.0.113.9", now=now + datetime.timedelta(minutes=1))
+        )

@@ -185,9 +185,7 @@ class TestBvlcCodec(unittest.TestCase):
     def test_forwarded_npdu_skips_the_originating_address(self):
         inner = encode_npdu(encode_apdu(WhoIsRequest()))
         origin = bytes([10, 0, 0, 7, 0xBA, 0xC0])  # 10.0.0.7:47808
-        decoded = bvlc.unwrap(
-            encode_bvlc(origin + inner, bvlc.FORWARDED_NPDU)
-        )
+        decoded = bvlc.unwrap(encode_bvlc(origin + inner, bvlc.FORWARDED_NPDU))
         self.assertEqual(encode_apdu(WhoIsRequest()), decoded.apdu)
         self.assertEqual("ForwardedNPDU", decoded.service)
 
@@ -200,9 +198,7 @@ class TestBvlcCodec(unittest.TestCase):
         internetwork to forward ITS broadcast traffic. The emulated device is
         a field controller, not a BBMD, so the truthful answer and the safe
         answer are the same one."""
-        decoded = bvlc.unwrap(
-            encode_bvlc(b"\x00\x3c", bvlc.REGISTER_FOREIGN_DEVICE)
-        )
+        decoded = bvlc.unwrap(encode_bvlc(b"\x00\x3c", bvlc.REGISTER_FOREIGN_DEVICE))
         self.assertIsNone(decoded.apdu)
         self.assertEqual(bvlc.build_result(0x0030), decoded.reply)
         self.assertEqual("RegisterForeignDevice", decoded.service)
@@ -275,9 +271,7 @@ class TestBvlcCodec(unittest.TestCase):
         self.assertEqual(bvlc.ORIGINAL_UNICAST_NPDU, function)
 
     def test_wrap_addresses_a_routed_reply_back_the_way_it_came(self):
-        link = bvlc.unwrap(
-            frame(WhoIsRequest(), source=RemoteStation(2001, 5))
-        ).link
+        link = bvlc.unwrap(frame(WhoIsRequest(), source=RemoteStation(2001, 5))).link
         wire = bvlc.wrap(b"\x10\x08", link)
 
         pdu = PDU()
@@ -500,9 +494,7 @@ class TestFramedBacnetServer(unittest.TestCase):
         self.assertEqual("UnconfirmedRequestPDU", requests[0]["pdu_type"])
 
     def test_a_refused_bbmd_function_is_answered_and_recorded(self):
-        reply = self._exchange(
-            encode_bvlc(b"\x00\x3c", bvlc.REGISTER_FOREIGN_DEVICE)
-        )
+        reply = self._exchange(encode_bvlc(b"\x00\x3c", bvlc.REGISTER_FOREIGN_DEVICE))
         self.assertEqual(bvlc.build_result(0x0030), reply)
 
         requests = self._requests()

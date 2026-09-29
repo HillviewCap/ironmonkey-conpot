@@ -275,9 +275,7 @@ class TestBACnetSubstationCapture(unittest.TestCase):
         request.propertyValue = Any(Real(99.0))
         self._send(request)
         requests = self._requests()
-        self.assertTrue(
-            requests, "a WriteProperty attempt left no record at all"
-        )
+        self.assertTrue(requests, "a WriteProperty attempt left no record at all")
         self.assertEqual("WritePropertyRequest", requests[0]["service"])
         self.assertEqual("analogInput", requests[0]["object_type"])
         self.assertEqual(12, requests[0]["object_instance"])
@@ -300,6 +298,4 @@ class TestBACnetSubstationCapture(unittest.TestCase):
             )
             request.apduMaxResp = 1024
             request.apduInvokeID = 103
-            self.assertIsNotNone(
-                self._send(request), "no answer for %r" % (object_id,)
-            )
+            self.assertIsNotNone(self._send(request), "no answer for %r" % (object_id,))

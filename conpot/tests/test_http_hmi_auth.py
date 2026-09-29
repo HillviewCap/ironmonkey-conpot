@@ -92,9 +92,7 @@ class TestSubstationHmiAuth(unittest.TestCase):
 
     def test_hmi_challenge_keeps_the_persona_banner(self):
         ret = requests.get(self.base + "/hmi/")
-        self.assertEqual(
-            "Siemens CP443-1 Advanced V3.3.0", ret.headers.get("Server")
-        )
+        self.assertEqual("Siemens CP443-1 Advanced V3.3.0", ret.headers.get("Server"))
         self.assertEqual("SIMATIC WinCC", ret.headers.get("X-Powered-By"))
 
     def test_hmi_challenge_is_not_cacheable(self):

@@ -113,9 +113,7 @@ class TestSectorPersonas(unittest.TestCase):
             for name in EXPECTED_PROTOCOLS:
                 schema = etree.XMLSchema(
                     etree.parse(
-                        os.path.join(
-                            PACKAGE_DIR, "protocols", name, "%s.xsd" % name
-                        )
+                        os.path.join(PACKAGE_DIR, "protocols", name, "%s.xsd" % name)
                     )
                 )
                 document = etree.parse(_protocol_file(persona, name))
@@ -126,13 +124,9 @@ class TestSectorPersonas(unittest.TestCase):
                 )
 
     def test_root_templates_validate(self):
-        schema = etree.XMLSchema(
-            etree.parse(os.path.join(PACKAGE_DIR, "template.xsd"))
-        )
+        schema = etree.XMLSchema(etree.parse(os.path.join(PACKAGE_DIR, "template.xsd")))
         for persona in PERSONAS:
-            document = etree.parse(
-                os.path.join(_template_dir(persona), "template.xml")
-            )
+            document = etree.parse(os.path.join(_template_dir(persona), "template.xml"))
             self.assertTrue(
                 schema.validate(document),
                 "%s template.xml: %s" % (persona, schema.error_log),
@@ -160,8 +154,7 @@ class TestSectorPersonas(unittest.TestCase):
             # child (the 302/401/403 the node answers with) and it carries no
             # name attribute.
             declared = {
-                status.get("name")
-                for status in root.xpath("//http/statuscodes/status")
+                status.get("name") for status in root.xpath("//http/statuscodes/status")
             }
             self.assertEqual(
                 set(EXPECTED_STATUS_CODES),
@@ -176,9 +169,7 @@ class TestSectorPersonas(unittest.TestCase):
                     "%s.status" % code,
                 )
                 self.assertTrue(os.path.isfile(path), "missing %s" % path)
-                self.assertGreater(
-                    os.path.getsize(path), 0, "%s is empty" % path
-                )
+                self.assertGreater(os.path.getsize(path), 0, "%s is empty" % path)
 
     def test_status_pages_are_pure_ascii(self):
         """Same `str_to_bytes` trap as htdocs: the payload is ASCII-encoded
@@ -237,9 +228,7 @@ class TestSectorPersonas(unittest.TestCase):
 
     def test_start_page_form_action_matches_a_node_that_exists(self):
         for persona in PERSONAS:
-            index = os.path.join(
-                _template_dir(persona), "http", "htdocs", "index.html"
-            )
+            index = os.path.join(_template_dir(persona), "http", "htdocs", "index.html")
             with open(index, encoding="ascii") as fh:
                 page = fh.read()
             self.assertIn('action="/login"', page)
@@ -289,21 +278,21 @@ class TestSectorPersonas(unittest.TestCase):
             }
             referenced = {
                 symbol.findtext("value")
-                for symbol in etree.parse(
-                    _protocol_file(persona, "snmp")
-                ).getroot().iter("symbol")
+                for symbol in etree.parse(_protocol_file(persona, "snmp"))
+                .getroot()
+                .iter("symbol")
             }
             referenced |= {
                 register.findtext("value")
-                for register in etree.parse(
-                    _protocol_file(persona, "IEC104")
-                ).getroot().iter("register")
+                for register in etree.parse(_protocol_file(persona, "IEC104"))
+                .getroot()
+                .iter("register")
             }
             referenced |= {
                 block.get("name")
-                for block in etree.parse(
-                    _protocol_file(persona, "modbus")
-                ).getroot().iter("block")
+                for block in etree.parse(_protocol_file(persona, "modbus"))
+                .getroot()
+                .iter("block")
             }
             self.assertTrue(referenced)
             self.assertLessEqual(referenced, keys, referenced - keys)
@@ -322,9 +311,9 @@ class TestSectorPersonas(unittest.TestCase):
                     lengths[key.get("name")] = len(
                         [part for part in text[1:-1].split(",") if part.strip()]
                     )
-            for block in etree.parse(
-                _protocol_file(persona, "modbus")
-            ).getroot().iter("block"):
+            for block in (
+                etree.parse(_protocol_file(persona, "modbus")).getroot().iter("block")
+            ):
                 name = block.get("name")
                 self.assertIn(name, lengths)
                 self.assertEqual(int(block.findtext("size")), lengths[name])
@@ -365,9 +354,7 @@ class TestSectorPersonas(unittest.TestCase):
             self.assertNotEqual(
                 0x006C061A, int(root.findtext("device_info/SerialNumber"))
             )
-            self.assertNotEqual(
-                0x3160, int(root.findtext("device_info/StatusWord"), 0)
-            )
+            self.assertNotEqual(0x3160, int(root.findtext("device_info/StatusWord"), 0))
             serials.append(root.findtext("device_info/SerialNumber"))
         self.assertEqual(len(serials), len(set(serials)), serials)
 
@@ -396,9 +383,7 @@ class TestSectorPersonas(unittest.TestCase):
                     path = os.path.join(root, name)
                     if name.endswith(".xml"):
                         tree = etree.parse(path)
-                        etree.strip_elements(
-                            tree, etree.Comment, with_tail=False
-                        )
+                        etree.strip_elements(tree, etree.Comment, with_tail=False)
                         for element in tree.getroot().iter():
                             if isinstance(element.tag, str):
                                 served.append(element.text or "")
@@ -408,9 +393,7 @@ class TestSectorPersonas(unittest.TestCase):
                             served.append(fh.read())
             blob = "\n".join(served)
             for needle in forbidden:
-                self.assertNotIn(
-                    needle, blob, "%s serves %r" % (persona, needle)
-                )
+                self.assertNotIn(needle, blob, "%s serves %r" % (persona, needle))
 
     # ── The persona manifest the forwarder reads ─────────────────────────────
 
@@ -466,8 +449,12 @@ class TestSectorPersonas(unittest.TestCase):
         for persona, manifest in manifests.items():
             base = manifest.get("variant_of")
             if base:
-                self.assertIn(base, manifests, "%s: variant_of unknown persona" % persona)
-                self.assertFalse(manifests[base].get("variant_of"), "variant of a variant")
+                self.assertIn(
+                    base, manifests, "%s: variant_of unknown persona" % persona
+                )
+                self.assertFalse(
+                    manifests[base].get("variant_of"), "variant of a variant"
+                )
                 self.assertEqual(manifests[base]["sector"], manifest["sector"], persona)
 
     def test_manifest_assets_are_complete(self):
@@ -537,5 +524,7 @@ class TestSectorPersonas(unittest.TestCase):
             )
             if "iec104" in services:
                 self.assertEqual(services["iec104"], services["iec-104"])
+
+
 if __name__ == "__main__":
     unittest.main()
