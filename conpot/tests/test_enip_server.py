@@ -310,8 +310,11 @@ class TestENIPSubstationCapture(unittest.TestCase):
     def test_identity_comes_from_the_template_not_cpppo(self):
         self._drain()
         with client.connector(
-            host=self.server.addr, port=self.server.port, timeout=4.0,
-            udp=False, broadcast=False,
+            host=self.server.addr,
+            port=self.server.port,
+            timeout=4.0,
+            udp=False,
+            broadcast=False,
         ) as connection:
             connection.list_identity()
             connection.shutdown()
@@ -333,9 +336,7 @@ class TestENIPSubstationCapture(unittest.TestCase):
         with client.connector(
             host=self.server.addr, port=self.server.port, timeout=4.0
         ) as connection:
-            for _ in connection.pipeline(
-                operations=self._operations(["@100/1/1"])
-            ):
+            for _ in connection.pipeline(operations=self._operations(["@100/1/1"])):
                 pass
         reads = [r for r in self._requests() if "cip_service" in r]
         self.assertTrue(reads, "a CIP read reached no session event")
@@ -370,9 +371,7 @@ class TestENIPSubstationCapture(unittest.TestCase):
         with client.connector(
             host=self.server.addr, port=self.server.port, timeout=4.0
         ) as connection:
-            for _ in connection.pipeline(
-                operations=self._operations(["@100/1/1"])
-            ):
+            for _ in connection.pipeline(operations=self._operations(["@100/1/1"])):
                 pass
         commands = [r.get("enip_command_name") for r in self._requests()]
         self.assertIn("register_session", commands)

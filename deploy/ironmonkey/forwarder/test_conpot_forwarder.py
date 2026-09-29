@@ -218,24 +218,24 @@ def test_dead_letter_rotation_disabled_when_cap_zero(tmp_path, event):
 # ADU: [0..1] txid, [2..3] proto, [4..5] len, [6] unit, [7] fc, [8...] fc data.
 
 #                       txid  proto len   u  fc start count
-REAL_FC1 = "b'00010000000601010000000a'"   # read coils        start=0  qty=10
-REAL_FC3 = "b'00020000000601030000000a'"   # read holding      start=0  qty=10
+REAL_FC1 = "b'00010000000601010000000a'"  # read coils        start=0  qty=10
+REAL_FC3 = "b'00020000000601030000000a'"  # read holding      start=0  qty=10
 #                       txid  proto len   u  fc addr  value
-REAL_FC5_ON = "b'00030000000601050010ff00'"    # write coil    addr=16 val=0xFF00
-REAL_FC5_OFF = "b'000400000006010500100000'"   # write coil    addr=16 val=0x0000
-REAL_FC5_ODD = "b'000500000006010500101234'"   # write coil    addr=16 val=0x1234
-REAL_FC6 = "b'0006000000060106001000ff'"       # write register addr=16 val=0x00FF
+REAL_FC5_ON = "b'00030000000601050010ff00'"  # write coil    addr=16 val=0xFF00
+REAL_FC5_OFF = "b'000400000006010500100000'"  # write coil    addr=16 val=0x0000
+REAL_FC5_ODD = "b'000500000006010500101234'"  # write coil    addr=16 val=0x1234
+REAL_FC6 = "b'0006000000060106001000ff'"  # write register addr=16 val=0x00FF
 #                       txid  proto len   u  fc start qty   bc data
-REAL_FC15 = "b'000700000009010f0000000a02cd01'"          # 10 coils, 2 bytes
-REAL_FC16 = "b'00080000000b01100010000204000a0102'"      # 2 regs, 4 bytes
+REAL_FC15 = "b'000700000009010f0000000a02cd01'"  # 10 coils, 2 bytes
+REAL_FC16 = "b'00080000000b01100010000204000a0102'"  # 2 regs, 4 bytes
 #                       txid  proto len   u  fc ref   and   or
 REAL_FC22 = "b'0009000000080116000400f20025'"  # mask write ref=4
 #                       txid  proto len   u  fc sub   data
-REAL_FC8 = "b'000a00000006010800040000'"       # diagnostics sub=4
+REAL_FC8 = "b'000a00000006010800040000'"  # diagnostics sub=4
 #                    txid  proto len   u  fc rds  rdq  wrs  wrq  bc data
 REAL_FC23 = "b'000b0000000d011700000002001000010200ab'"
-REAL_FC43 = "b'000c00000005012b0e0100'"        # read device identification
-REAL_FC100 = "b'000d00000006016400000001'"     # vendor-defined / unknown
+REAL_FC43 = "b'000c00000005012b0e0100'"  # read device identification
+REAL_FC100 = "b'000d00000006016400000001'"  # vendor-defined / unknown
 
 
 def _mbap(pdu_hex: str, txid: int = 1, unit: int = 1) -> str:
@@ -372,8 +372,13 @@ class TestModbusParse:
         """(g) 100 registers → 64 values + a truncation flag; `count` still says 100."""
         cf = _reload_module()
         registers = b"".join(i.to_bytes(2, "big") for i in range(100))
-        pdu = "10" + (16).to_bytes(2, "big").hex() + (100).to_bytes(2, "big").hex() \
-            + bytes([200]).hex() + registers.hex()
+        pdu = (
+            "10"
+            + (16).to_bytes(2, "big").hex()
+            + (100).to_bytes(2, "big").hex()
+            + bytes([200]).hex()
+            + registers.hex()
+        )
         parsed = cf._parse_modbus_request(_mbap(pdu))
         assert parsed["count"] == 100
         assert parsed["values_truncated"] is True
@@ -385,8 +390,13 @@ class TestModbusParse:
         """The cap applies to coil bits too, not just registers."""
         cf = _reload_module()
         coil_bytes = bytes([0xFF] * 13)  # 104 bits available, 100 declared
-        pdu = "0f" + (0).to_bytes(2, "big").hex() + (100).to_bytes(2, "big").hex() \
-            + bytes([13]).hex() + coil_bytes.hex()
+        pdu = (
+            "0f"
+            + (0).to_bytes(2, "big").hex()
+            + (100).to_bytes(2, "big").hex()
+            + bytes([13]).hex()
+            + coil_bytes.hex()
+        )
         parsed = cf._parse_modbus_request(_mbap(pdu))
         assert parsed["count"] == 100
         assert len(parsed["written_values"]) == 64
@@ -427,7 +437,7 @@ class TestModbusParse:
         # read qty 2, write qty 4, but only 2 registers of data present
         pdu = "17" + "0000" + "0002" + "0010" + "0004" + "04" + "000a0102"
         parsed = cf._parse_modbus_request(_mbap(pdu))
-        assert parsed["count"] == 2          # read half, untouched
+        assert parsed["count"] == 2  # read half, untouched
         assert parsed["write_count"] == 4
         assert parsed["written_values"] == [0x000A, 0x0102]
         assert parsed["values_incomplete"] is True
@@ -447,13 +457,23 @@ class TestModbusParse:
             ("fc3 read, count field 1 byte short", 3, "03" + "0000" + "00"),
             ("fc6 write, no value", 6, "06" + "0010"),
             ("fc22 mask, missing or_mask", 22, "16" + "0004" + "00f2"),
-            ("fc16 byte count exceeds frame", 16, "10" + "0010" + "0002" + "04" + "000a"),
+            (
+                "fc16 byte count exceeds frame",
+                16,
+                "10" + "0010" + "0002" + "04" + "000a",
+            ),
             ("fc15 byte count exceeds frame", 15, "0f" + "0000" + "000a" + "02" + "cd"),
-            ("fc23 truncated before data", 23, "17" + "0000" + "0002" + "0010" + "0001" + "02"),
+            (
+                "fc23 truncated before data",
+                23,
+                "17" + "0000" + "0002" + "0010" + "0001" + "02",
+            ),
             ("fc8 single-byte sub function", 8, "08" + "00"),
         ],
     )
-    def test_short_pdu_keeps_the_function_code_and_never_raises(self, label, fc, pdu_hex):
+    def test_short_pdu_keeps_the_function_code_and_never_raises(
+        self, label, fc, pdu_hex
+    ):
         """(h) A short frame degrades to the FC alone -- it must not erase the exchange.
 
         Returning {} here is destructive rather than merely lossy: the session
@@ -492,7 +512,9 @@ class TestModbusParse:
         assert cf._parse_modbus_request(REAL_FC43) == {"function_code": 43}
         assert cf._parse_modbus_request(REAL_FC100) == {"function_code": 100}
 
-    @pytest.mark.parametrize("raw", [None, "", "not-hex-at-all", "b'zzzz'", "b'0001020'"])
+    @pytest.mark.parametrize(
+        "raw", [None, "", "not-hex-at-all", "b'zzzz'", "b'0001020'"]
+    )
     def test_unparseable_request_returns_empty(self, raw):
         """(j) Existing contract: {} lets the forwarder still POST the event."""
         cf = _reload_module()
@@ -682,15 +704,17 @@ class TestMapRecordLifecycle:
         """An FC6 record carries the written value through to the POST payload."""
         cf = _reload_module()
         with patch.object(cf, "_get_parent_session_id", return_value=None):
-            mapped = cf._map_record({
-                "event_type": None,
-                "data_type": "modbus",
-                "src_ip": "203.0.113.9",
-                "dst_port": 5020,
-                "request": REAL_FC6,
-                "id": "sess-2",
-                "timestamp": "2026-08-11T14:51:01.724936",
-            })
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "modbus",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 5020,
+                    "request": REAL_FC6,
+                    "id": "sess-2",
+                    "timestamp": "2026-08-11T14:51:01.724936",
+                }
+            )
         assert mapped is not None
         assert mapped["protocol_data"]["written_value"] == 0x00FF
         assert mapped["protocol_data"]["function_code"] == 6
@@ -701,15 +725,21 @@ class TestMapRecordLifecycle:
         """Conpot 0.6.0 never emits a dict, but if it did, writes must not be relabeled."""
         cf = _reload_module()
         with patch.object(cf, "_get_parent_session_id", return_value=None):
-            mapped = cf._map_record({
-                "event_type": None,
-                "data_type": "modbus",
-                "src_ip": "203.0.113.9",
-                "dst_port": 5020,
-                "request": {"function_code": 6, "start_address": 16, "written_value": 255},
-                "id": "sess-3",
-                "timestamp": "2026-08-11T14:51:01.724936",
-            })
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "modbus",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 5020,
+                    "request": {
+                        "function_code": 6,
+                        "start_address": 16,
+                        "written_value": 255,
+                    },
+                    "id": "sess-3",
+                    "timestamp": "2026-08-11T14:51:01.724936",
+                }
+            )
         assert mapped is not None
         assert mapped["protocol_data"]["written_value"] == 255
         assert "count" not in mapped["protocol_data"]
@@ -723,17 +753,19 @@ class TestMapRecordLifecycle:
             "('User-Agent', 'Mozilla/5.0 (Nmap Scripting Engine)')], None)"
         )
         with patch.object(cf, "_get_parent_session_id", return_value=None):
-            mapped = cf._map_record({
-                "event_type": None,
-                "data_type": "http",
-                "src_ip": "203.0.113.9",
-                "dst_port": 8800,
-                "request": request,
-                "response": "200",
-                "method": "GET",
-                "id": "sess-4",
-                "timestamp": "2026-08-11T14:51:01.724936",
-            })
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "http",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 8800,
+                    "request": request,
+                    "response": "200",
+                    "method": "GET",
+                    "id": "sess-4",
+                    "timestamp": "2026-08-11T14:51:01.724936",
+                }
+            )
         assert mapped is not None
         assert mapped["dst_port"] == 80  # internal 8800 normalized to the bait port
         pd = mapped["protocol_data"]
@@ -749,17 +781,19 @@ class TestMapRecordLifecycle:
         cf = _reload_module()
         request = "('/awp/Bootstrapper', [('User-Agent', 'curl/7.68.0')], None)"
         with patch.object(cf, "_get_parent_session_id", return_value=None):
-            mapped = cf._map_record({
-                "event_type": None,
-                "data_type": "http",
-                "src_ip": "203.0.113.9",
-                "dst_port": 8800,
-                "request": request,
-                "response": "404",
-                "method": "GET",
-                "id": "sess-5",
-                "timestamp": "2026-08-11T14:51:01.724936",
-            })
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "http",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 8800,
+                    "request": request,
+                    "response": "404",
+                    "method": "GET",
+                    "id": "sess-5",
+                    "timestamp": "2026-08-11T14:51:01.724936",
+                }
+            )
         assert mapped["protocol_data"]["http_path"] == "/awp/Bootstrapper"
         assert mapped["protocol_data"]["http_status"] == 404
 
@@ -768,15 +802,17 @@ class TestMapRecordLifecycle:
         Conpot's real hex-string request, so s7_function never populated."""
         cf = _reload_module()
         with patch.object(cf, "_get_parent_session_id", return_value=None):
-            mapped = cf._map_record({
-                "event_type": None,
-                "data_type": "s7comm",
-                "src_ip": "203.0.113.9",
-                "dst_port": 10201,
-                "request": _s7_frame(params=bytes([0x29])),
-                "id": "sess-6",
-                "timestamp": "2026-08-11T14:51:01.724936",
-            })
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "s7comm",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 10201,
+                    "request": _s7_frame(params=bytes([0x29])),
+                    "id": "sess-6",
+                    "timestamp": "2026-08-11T14:51:01.724936",
+                }
+            )
         assert mapped is not None
         assert mapped["dst_port"] == 102  # internal 10201 normalized to the bait port
         assert mapped["protocol_data"]["s7_function"] == 0x29
@@ -785,15 +821,17 @@ class TestMapRecordLifecycle:
         """Defensive compat: if a future Conpot ever emits a dict here."""
         cf = _reload_module()
         with patch.object(cf, "_get_parent_session_id", return_value=None):
-            mapped = cf._map_record({
-                "event_type": None,
-                "data_type": "s7comm",
-                "src_ip": "203.0.113.9",
-                "dst_port": 10201,
-                "request": {"function": 17},
-                "id": "sess-7",
-                "timestamp": "2026-08-11T14:51:01.724936",
-            })
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "s7comm",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 10201,
+                    "request": {"function": 17},
+                    "id": "sess-7",
+                    "timestamp": "2026-08-11T14:51:01.724936",
+                }
+            )
         assert mapped["protocol_data"]["s7_function"] == 17
 
 
@@ -902,11 +940,23 @@ class TestObservationTimestamp:
         with patch.object(cf, "_get_parent_session_id", return_value=None):
             mapped = cf._map_record(dict(self._REC))
 
-        assert sorted(mapped.keys()) == sorted([
-            "timestamp", "sensor_id", "source_ip", "source_country", "source_asn",
-            "dst_port", "service", "session_id", "username", "password",
-            "source_type", "protocol_data", "parent_session_id",
-        ])
+        assert sorted(mapped.keys()) == sorted(
+            [
+                "timestamp",
+                "sensor_id",
+                "source_ip",
+                "source_country",
+                "source_asn",
+                "dst_port",
+                "service",
+                "session_id",
+                "username",
+                "password",
+                "source_type",
+                "protocol_data",
+                "parent_session_id",
+            ]
+        )
         # never inside protocol_data -- it is an _exchange_key input
         assert not any("time" in k or "ts" in k for k in mapped["protocol_data"])
 
@@ -1007,11 +1057,11 @@ class TestCredentialCapture:
     @pytest.mark.parametrize(
         "header",
         [
-            "Bearer eyJhbGciOi",          # not Basic at all
-            "Basic !!!!not-base64!!!!",   # scheme right, payload junk
-            "Basic",                      # no token
-            "Basic    ",                  # whitespace token
-            "",                           # empty header
+            "Bearer eyJhbGciOi",  # not Basic at all
+            "Basic !!!!not-base64!!!!",  # scheme right, payload junk
+            "Basic",  # no token
+            "Basic    ",  # whitespace token
+            "",  # empty header
         ],
     )
     def test_junk_authorization_yields_no_credential(self, header):
@@ -1121,11 +1171,25 @@ class TestCredentialCapture:
         with patch.object(cf, "_get_parent_session_id", return_value=None):
             mapped = cf._map_record(record)
 
-        assert sorted(mapped.keys()) == sorted([
-            "timestamp", "sensor_id", "source_ip", "source_country", "source_asn",
-            "dst_port", "service", "session_id", "username", "password",
-            "source_type", "protocol_data", "parent_session_id",
-        ])
+        assert sorted(mapped.keys()) == sorted(
+            [
+                "timestamp",
+                "sensor_id",
+                "source_ip",
+                "source_country",
+                "source_asn",
+                "dst_port",
+                "service",
+                "session_id",
+                "username",
+                "password",
+                "source_type",
+                "protocol_data",
+                "parent_session_id",
+            ]
+        )
+
+
 # ── SNMP / BACnet / EtherNet-IP mapping (Phase 2 step H10) ──────────────────
 
 
@@ -1309,9 +1373,7 @@ class TestNewOtProtocolMapping:
         assert len(data["cip_written_values"]) == 64
         assert data["cip_written_values_truncated"] is True
 
-    @pytest.mark.parametrize(
-        "event_type", ["CONNECTION_CLOSED", "CONNECTION_FAILED"]
-    )
+    @pytest.mark.parametrize("event_type", ["CONNECTION_CLOSED", "CONNECTION_FAILED"])
     def test_enip_lifecycle_events_are_not_forwarded(self, event_type):
         """CONNECTION_CLOSED is per TRANSACTION in the ENIP server.
 
@@ -1319,8 +1381,7 @@ class TestNewOtProtocolMapping:
         nothing else -- for every real one on a busy session.
         """
         assert (
-            self._map(self._record("enip", None, 44818, event_type=event_type))
-            is None
+            self._map(self._record("enip", None, 44818, event_type=event_type)) is None
         )
 
     def test_unknown_keys_from_a_handler_are_dropped(self):
@@ -1505,9 +1566,11 @@ class TestPersonaAssetRoster:
         """
         cf = _reload_module()
         templates = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(cf.__file__)
-            )))),
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(cf.__file__)))
+                )
+            ),
             "conpot",
             "templates",
         )
@@ -1541,9 +1604,13 @@ class TestPersonaAssetRoster:
                 + [("__default__", default)]
             }
             for key in mine:
-                assert key not in seen, (
-                    "persona %s repeats %s on %s, already used by %s"
-                    % (persona, key[2], key[0], seen.get(key))
+                assert (
+                    key not in seen
+                ), "persona %s repeats %s on %s, already used by %s" % (
+                    persona,
+                    key[2],
+                    key[0],
+                    seen.get(key),
                 )
             for key in mine:
                 seen[key] = persona

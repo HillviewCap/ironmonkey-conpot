@@ -65,9 +65,7 @@ class TestSubstationTemplate(unittest.TestCase):
     def test_protocol_files_validate_against_their_xsd(self):
         """Same validation bin/conpot runs, before a sensor ever sees it."""
         for name in EXPECTED_PROTOCOLS:
-            xsd_path = os.path.join(
-                PACKAGE_DIR, "protocols", name, "%s.xsd" % name
-            )
+            xsd_path = os.path.join(PACKAGE_DIR, "protocols", name, "%s.xsd" % name)
             schema = etree.XMLSchema(etree.parse(xsd_path))
             document = etree.parse(_protocol_file(name))
             self.assertTrue(
@@ -76,9 +74,7 @@ class TestSubstationTemplate(unittest.TestCase):
             )
 
     def test_root_template_validates(self):
-        schema = etree.XMLSchema(
-            etree.parse(os.path.join(PACKAGE_DIR, "template.xsd"))
-        )
+        schema = etree.XMLSchema(etree.parse(os.path.join(PACKAGE_DIR, "template.xsd")))
         document = etree.parse(os.path.join(TEMPLATE_DIR, "template.xml"))
         self.assertTrue(
             schema.validate(document),
@@ -117,9 +113,9 @@ class TestSubstationTemplate(unittest.TestCase):
         """
         databus_keys = {
             key.get("name")
-            for key in etree.parse(
-                os.path.join(TEMPLATE_DIR, "template.xml")
-            ).getroot().iter("key")
+            for key in etree.parse(os.path.join(TEMPLATE_DIR, "template.xml"))
+            .getroot()
+            .iter("key")
         }
         symbols = etree.parse(_protocol_file("snmp")).getroot().iter("symbol")
         referenced = {symbol.findtext("value") for symbol in symbols}
@@ -136,12 +132,8 @@ class TestSubstationTemplate(unittest.TestCase):
         self.assertNotEqual(
             "1756-L61/B LOGIX5561", root.findtext("device_info/ProductName")
         )
-        self.assertNotEqual(
-            0x006C061A, int(root.findtext("device_info/SerialNumber"))
-        )
-        self.assertNotEqual(
-            0x3160, int(root.findtext("device_info/StatusWord"), 0)
-        )
+        self.assertNotEqual(0x006C061A, int(root.findtext("device_info/SerialNumber")))
+        self.assertNotEqual(0x3160, int(root.findtext("device_info/StatusWord"), 0))
 
     def test_bacnet_device_name_is_not_the_upstream_literal(self):
         """Conpot reads <device_name> as a literal, not as a databus key.
@@ -150,9 +142,7 @@ class TestSubstationTemplate(unittest.TestCase):
         which is a Conpot tell on its own.
         """
         root = etree.parse(_protocol_file("bacnet")).getroot()
-        self.assertNotEqual(
-            "SystemName", root.findtext("device_info/device_name")
-        )
+        self.assertNotEqual("SystemName", root.findtext("device_info/device_name"))
 
     def test_bacnet_object_identifiers_are_unique(self):
         """BACnetApp.add_object raises RuntimeError on a duplicate.
@@ -161,10 +151,7 @@ class TestSubstationTemplate(unittest.TestCase):
         way to ship a bait port that answers TCP and captures nothing.
         """
         root = etree.parse(_protocol_file("bacnet")).getroot()
-        identifiers = [
-            int(node.text)
-            for node in root.iter("object_identifier")
-        ]
+        identifiers = [int(node.text) for node in root.iter("object_identifier")]
         self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertNotIn(
             int(root.findtext("device_info/device_identifier")), identifiers

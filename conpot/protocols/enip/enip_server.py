@@ -149,9 +149,7 @@ class EnipConfig(object):
     def mode(self, value):
         self._mode = value
         self.modes = frozenset(
-            part
-            for part in str(value or "").replace(",", " ").lower().split()
-            if part
+            part for part in str(value or "").replace(",", " ").lower().split() if part
         )
 
     class Tag(object):
@@ -183,9 +181,9 @@ class EnipConfig(object):
         status_word = dom.xpath("//enip/device_info/StatusWord/text()")
         self.status_word = int(status_word[0], 0) if status_word else None
         self.mode = dom.xpath("//enip/mode/text()")[0]
-        assert self.modes and self.modes <= _VALID_MODES, (
-            "Invalid ENIP mode %r; expected tcp, udp, or both" % (self._mode,)
-        )
+        assert (
+            self.modes and self.modes <= _VALID_MODES
+        ), "Invalid ENIP mode %r; expected tcp, udp, or both" % (self._mode,)
         self.timeout = float(dom.xpath("//enip/timeout/text()")[0])
         self.latency = float(dom.xpath("//enip/latency/text()")[0])
         # Step H10c. Only the UDP half is gated; the TCP half already sits
@@ -260,9 +258,7 @@ class EnipServer(object):
         try:
             device.Object.config_loader.read_dict({"Identity": values})
         except Exception as exc:
-            logger.warning(
-                "ENIP identity not applied; serving cpppo defaults: %s", exc
-            )
+            logger.warning("ENIP identity not applied; serving cpppo defaults: %s", exc)
 
     @staticmethod
     def _cip_request_facts(data):

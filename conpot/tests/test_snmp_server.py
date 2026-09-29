@@ -184,9 +184,7 @@ class TestSNMPSubstationCapture(unittest.TestCase):
         )
         gevent.sleep(0.2)
         requests = [e["request"] for e in self._events() if "request" in e]
-        self.assertTrue(
-            requests, "a rejected community left no record of the guess"
-        )
+        self.assertTrue(requests, "a rejected community left no record of the guess")
         request = requests[0]
         self.assertEqual("private", request["community"])
         self.assertEqual("2c", request["version"])
