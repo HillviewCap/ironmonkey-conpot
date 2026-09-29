@@ -1033,6 +1033,207 @@ class TestRawPduRetention:
         assert pd["type_id"] == 100
 
 
+# ── W1-08a: IEC-104 command values ───────────────────────────────────────────
+#
+# `request` dicts exactly as the fork's `_record_asdu_event` logs them for the
+# c104 frames above (pinned on the Conpot side by
+# conpot/tests/test_iec104_server.py::TestRecordAsduCommandValues), each put
+# through a JSON round trip the way the log file does.
+FORK_LOGGED_C_SC_SELECT = {
+    "type_id": 45,
+    "raw": C104_C_SC_NA_1_SELECT,
+    "cot": 6,
+    "ioa": 5000,
+    "coa": 1,
+    "value": 1,
+    "select": True,
+    "qualifier": 0,
+}
+FORK_LOGGED_C_SC_EXECUTE = {
+    **FORK_LOGGED_C_SC_SELECT,
+    "raw": C104_C_SC_NA_1_EXECUTE,
+    "select": False,
+}
+FORK_LOGGED_C_SE_NC = {
+    "type_id": 50,
+    "raw": C104_C_SE_NC_1,
+    "cot": 6,
+    "ioa": 5002,
+    "coa": 1,
+    "value": 110.5,
+    "select": False,
+    "qualifier": 0,
+}
+FORK_LOGGED_C_SE_NB = {
+    "type_id": 49,
+    "raw": C104_C_SE_NB_1,
+    "cot": 6,
+    "ioa": 5003,
+    "coa": 1,
+    "value": -1234,
+    "select": False,
+    "qualifier": 0,
+}
+FORK_LOGGED_C_IC = {
+    "type_id": 100,
+    "raw": C104_C_IC_NA_1,
+    "cot": 6,
+    "ioa": 0,
+    "coa": 1,
+    "qualifier": 20,
+}
+
+# Every protocol_data key an IEC-104 record may carry after Batch A, besides
+# the asset identity. Both downstream allow-lists pass exactly these.
+IEC104_KEYS = {
+    "type_id",
+    "cot",
+    "ioa",
+    "iec104_value",
+    "iec104_select",
+    "iec104_qualifier",
+    "iec104_coa",
+    "raw_request_hex",
+    "raw_request_truncated",
+}
+ASSET_KEYS = {"asset_type", "vendor", "model"}
+
+
+class TestIec104CommandValues:
+    @staticmethod
+    def _map(request):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            return cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "IEC104",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 2404,
+                    "request": json.loads(json.dumps(request)),
+                    "response": None,
+                    "id": "sess-w1-08a",
+                }
+            )["protocol_data"]
+
+    @pytest.mark.parametrize(
+        "logged, value, select, qualifier",
+        [
+            (FORK_LOGGED_C_SC_SELECT, 1, True, 0),
+            (FORK_LOGGED_C_SC_EXECUTE, 1, False, 0),
+            (FORK_LOGGED_C_SE_NC, 110.5, False, 0),
+            (FORK_LOGGED_C_SE_NB, -1234, False, 0),
+        ],
+    )
+    def test_commands_carry_value_select_qualifier_and_coa(
+        self, logged, value, select, qualifier
+    ):
+        pd = self._map(logged)
+        assert pd["iec104_value"] == value
+        assert type(pd["iec104_value"]) is type(value)
+        assert pd["iec104_select"] is select
+        assert pd["iec104_qualifier"] == qualifier
+        assert type(pd["iec104_qualifier"]) is int
+        assert pd["iec104_coa"] == 1
+        assert type(pd["iec104_coa"]) is int
+        assert pd["raw_request_hex"] == logged["raw"]
+        assert set(pd) <= IEC104_KEYS | ASSET_KEYS, set(pd) - IEC104_KEYS - ASSET_KEYS
+
+    def test_select_and_execute_are_distinguishable(self):
+        """Select-before-operate is two exchanges; the pair is only visible
+        because the S/E bit survives to protocol_data."""
+        select = self._map(FORK_LOGGED_C_SC_SELECT)
+        execute = self._map(FORK_LOGGED_C_SC_EXECUTE)
+        assert (select["iec104_select"], execute["iec104_select"]) == (True, False)
+
+    def test_interrogation_has_a_qualifier_and_no_value(self):
+        pd = self._map(FORK_LOGGED_C_IC)
+        assert pd["iec104_qualifier"] == 20
+        assert "iec104_value" not in pd
+        assert "iec104_select" not in pd
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"value": "1"},
+            {"value": None},
+            {"value": [1]},
+            {"select": 1},
+            {"select": "true"},
+            {"qualifier": True},
+            {"qualifier": 256},
+            {"qualifier": -1},
+            {"qualifier": 2.0},
+            {"coa": 65536},
+            {"coa": False},
+        ],
+    )
+    def test_out_of_contract_values_are_left_out(self, bad):
+        """IronPot would drop each of these; they are never sent."""
+        (key,) = bad
+        pd = self._map({**FORK_LOGGED_C_SC_SELECT, **bad})
+        assert f"iec104_{key}" not in pd
+        assert pd["type_id"] == 45  # the rest of the record is unaffected
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_is_left_out(self, value):
+        cf = _reload_module()
+        parsed = cf._parse_iec104_request({**FORK_LOGGED_C_SE_NC, "value": value})
+        assert "iec104_value" not in parsed
+
+    def test_bool_value_passes(self):
+        pd = self._map({**FORK_LOGGED_C_SC_SELECT, "value": True})
+        assert pd["iec104_value"] is True
+
+    def test_record_from_a_pre_w1_image_is_unchanged(self):
+        pd = self._map({"type_id": 45, "cot": 6, "ioa": 5000})
+        assert set(pd) - ASSET_KEYS == {"type_id", "cot", "ioa"}
+
+
+class TestBatchAKeyContract:
+    """Every key Batch A adds, on every real frame, is one both downstream
+    allow-lists accept -- anything else would be dropped without a sound."""
+
+    @pytest.mark.parametrize(
+        "logged",
+        [
+            CONPOT_LOGGED_S7_CR,
+            CONPOT_LOGGED_S7_SZL_0011,
+            {"request": NMAP_S7_INFO_ALT_COTP_CR, "response": None},
+            {"request": NMAP_S7_INFO_ROSCTR_SETUP, "response": None},
+            {"request": NMAP_S7_INFO_SZL_001C, "response": None},
+            {"request": PLCSCAN_COTP_CR, "response": None},
+            {"request": SNAP7_COTP_CR, "response": None},
+            {"request": SNAP7_COTP_CR_RACK2_SLOT3, "response": None},
+            {"request": SNAP7_SZL_0011_INDEX_0, "response": None},
+            {"request": SNAP7_SZL_001C, "response": None},
+            {"request": SNAP7_DB_READ, "response": None},
+            {"request": PYSNAP7_SZL_0011, "response": None},
+        ],
+    )
+    def test_s7(self, logged):
+        pd = TestRawPduRetention._map("s7comm", logged["request"], logged["response"])
+        extra = set(pd) - S7_BATCH_A_KEYS - RAW_KEYS - ASSET_KEYS
+        assert not extra, extra
+        _assert_s7_contract({k: v for k, v in pd.items() if k in S7_BATCH_A_KEYS})
+        assert pd["raw_request_hex"] == logged["request"][2:-1]
+
+    @pytest.mark.parametrize(
+        "logged",
+        [
+            FORK_LOGGED_C_SC_SELECT,
+            FORK_LOGGED_C_SC_EXECUTE,
+            FORK_LOGGED_C_SE_NC,
+            FORK_LOGGED_C_SE_NB,
+            FORK_LOGGED_C_IC,
+        ],
+    )
+    def test_iec104(self, logged):
+        pd = TestIec104CommandValues._map(logged)
+        extra = set(pd) - IEC104_KEYS - ASSET_KEYS
+        assert not extra, extra
+
+
 class TestHttpParse:
     """`_parse_http_request` — the stringified (path, headers, body) tuple."""
 

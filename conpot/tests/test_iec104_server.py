@@ -286,6 +286,11 @@ class TestIEC104Server(unittest.TestCase):
         self.assertEqual(0x131600, request["ioa"])
         # W1-09: the I-frame itself, as received.
         self.assertEqual(single_command.build().hex(), request["raw"])
+        # W1-08a: what the command asked for. A direct execute of OFF.
+        self.assertEqual(0, request["value"])
+        self.assertIs(False, request["select"])
+        self.assertEqual(0, request["qualifier"])
+        self.assertEqual(self.coa, request["coa"])
 
         s.close()
 
@@ -321,6 +326,11 @@ C104_C_DC_NA_1_ON = "680e040006002e010600010089130002"
 C104_C_SE_NC_1 = "6812060008003201060001008a13000000dd4200"  # 110.5
 C104_C_SE_NB_1 = "681008000a003101060001008b13002efb00"  # -1234
 C104_C_IC_NA_1 = "680e0a000c0064010600010000000014"  # QOI 20
+C104_C_SE_NA_1 = "68100a000c003001060001008c130000c000"  # -0.5
+C104_C_RC_NA_1 = "680e0c000e002f01060001008d13000a"  # higher, long pulse
+# A short float set point on a SELECT_AND_EXECUTE point: QOS 0x80, then 0x00.
+C104_C_SE_NC_1_SELECT = "68120e0010003201060001008e13000000aa4180"  # 21.25
+C104_C_SE_NC_1_EXECUTE = "6812100012003201060001008e13000000aa4100"
 
 
 class _RecordingSession:
@@ -369,3 +379,81 @@ class TestRecordAsduEvent(unittest.TestCase):
         handler = SimpleNamespace(session=_RecordingSession())
         IEC104._record_asdu_event(handler, container, 100)
         self.assertNotIn("raw", handler.session.events[0]["request"])
+
+
+class TestRecordAsduCommandValues(unittest.TestCase):
+    """`value`/`select`/`qualifier`/`coa` from real client frames (W1-08a)."""
+
+    def _assert_fields(self, frame_hex, **expected):
+        request = _logged_request(frame_hex)
+        got = {k: request[k] for k in expected if k in request}
+        self.assertEqual(expected, got)
+        for key, want in expected.items():
+            self.assertIs(type(want), type(request[key]), key)
+        return request
+
+    def test_single_command_select_then_execute(self):
+        self._assert_fields(
+            C104_C_SC_NA_1_SELECT, value=1, select=True, qualifier=0, coa=1
+        )
+        self._assert_fields(
+            C104_C_SC_NA_1_EXECUTE, value=1, select=False, qualifier=0, coa=1
+        )
+
+    def test_double_command(self):
+        self._assert_fields(
+            C104_C_DC_NA_1_ON, value=2, select=False, qualifier=0, coa=1
+        )
+
+    def test_regulating_step_carries_its_pulse_qualifier(self):
+        self._assert_fields(C104_C_RC_NA_1, value=2, select=False, qualifier=2, coa=1)
+
+    def test_short_float_set_point_select_then_execute(self):
+        self._assert_fields(
+            C104_C_SE_NC_1_SELECT, value=21.25, select=True, qualifier=0, coa=1
+        )
+        self._assert_fields(
+            C104_C_SE_NC_1_EXECUTE, value=21.25, select=False, qualifier=0, coa=1
+        )
+        self._assert_fields(C104_C_SE_NC_1, value=110.5, select=False)
+
+    def test_scaled_set_point(self):
+        self._assert_fields(C104_C_SE_NB_1, value=-1234, select=False, qualifier=0)
+
+    def test_normalized_set_point(self):
+        self._assert_fields(C104_C_SE_NA_1, value=-0.5, select=False, qualifier=0)
+
+    def test_interrogation_carries_only_its_qualifier(self):
+        request = self._assert_fields(C104_C_IC_NA_1, qualifier=20, coa=1)
+        self.assertNotIn("value", request)
+        self.assertNotIn("select", request)
+
+    def test_non_finite_float_set_point_has_no_value(self):
+        """The real 110.5 set point with its float bytes swapped for NaN and
+        +inf: JSON has no spelling for either, so `value` is left out."""
+        for float_le in ("0000c07f", "0000807f"):
+            frame_hex = C104_C_SE_NC_1.replace("0000dd42", float_le)
+            request = _logged_request(frame_hex)
+            self.assertNotIn("value", request)
+            self.assertIs(False, request["select"])
+
+    def test_truncated_command_degrades_without_raising(self):
+        """Every prefix that still holds the APCI and the 6-byte ASDU header
+        -- handle_i_frame reads the TypeID before it records anything."""
+        frame = C104_C_SE_NC_1_SELECT
+        for cut in range(2, len(frame) - 24 + 1, 2):
+            request = _logged_request(frame[:-cut])
+            self.assertEqual(50, request["type_id"])
+            self.assertTrue(
+                set(request)
+                <= {
+                    "type_id",
+                    "raw",
+                    "cot",
+                    "ioa",
+                    "coa",
+                    "value",
+                    "select",
+                    "qualifier",
+                }
+            )

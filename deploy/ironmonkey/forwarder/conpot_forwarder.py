@@ -21,6 +21,7 @@ import ast
 import base64
 import binascii
 import json
+import math
 import os
 import sys
 import threading
@@ -1006,17 +1007,47 @@ def _attach_raw_pdus(parsed: dict[str, Any], request: Any, response: Any) -> Non
     _attach_raw_hex(parsed, "raw_response", _decode_logged_hex(response))
 
 
+def _bounded_int(value: Any, low: int, high: int) -> int | None:
+    """`value` if it is a real int in range, else None. A bool is not an int
+    here: IronPot drops `True` where it expects a qualifier, and so do we."""
+    if type(value) is int and low <= value <= high:
+        return value
+    return None
+
+
 def _parse_iec104_request(request: dict[str, Any]) -> dict[str, Any]:
     """Flatten the fork's dict-shaped IEC-104 ASDU record.
 
     `type_id`/`cot`/`ioa` pass through as they always have (None is dropped
     by the caller). `raw` is the I-frame hex `_record_asdu_event` adds.
+
+    Wave 1, W1-08a: `value`, `select`, `qualifier` and `coa` -- what a
+    command asked for -- are copied under the `iec104_` prefix, each held to
+    the shape IronPot's allow-list accepts, because a value it would drop is
+    better left out here than sent:
+      iec104_value      int, bool or finite float (the command state, or the
+                        set point).
+      iec104_select     bool, True = select, False = execute.
+      iec104_qualifier  int 0-255 (QU, QL, QOI or QCC).
+      iec104_coa        int 0-65535, the common address the command was
+                        sent to, which is what separates a command aimed at
+                        this station from a scanner's wrong guess.
     """
     parsed: dict[str, Any] = {
         "type_id": request.get("type_id"),
         "cot": request.get("cot"),
         "ioa": request.get("ioa"),
     }
+
+    value = request.get("value")
+    if type(value) in (bool, int) or (type(value) is float and math.isfinite(value)):
+        parsed["iec104_value"] = value
+    select = request.get("select")
+    if type(select) is bool:
+        parsed["iec104_select"] = select
+    parsed["iec104_qualifier"] = _bounded_int(request.get("qualifier"), 0, 255)
+    parsed["iec104_coa"] = _bounded_int(request.get("coa"), 0, 65535)
+
     _attach_raw_hex(parsed, "raw_request", _decode_logged_hex(request.get("raw")))
     return parsed
 
