@@ -355,48 +355,171 @@ def _parse_modbus_request(raw: str | None) -> dict[str, Any]:
         return parsed
 
 
-def _parse_s7comm_request(raw: str | None) -> dict[str, Any]:
-    """Interpret Conpot's stringified TPKT+COTP+S7 request frame.
+def _decode_logged_hex(raw: Any) -> bytes | None:
+    """Bytes from Conpot's `str(codecs.encode(data, "hex"))` log shape.
 
-    Conpot's s7_server.py logs `request` as `str(codecs.encode(data, "hex"))`
-    where `data` is the RAW WIRE FRAME (TPKT header + COTP header + the full
-    S7 PDU) -- the same `b'...'` hex-string shape `_parse_modbus_request`
-    already handles, just with two protocol layers wrapped around the S7
-    payload instead of none. The forwarder's s7comm branch used to gate on
-    `isinstance(request, dict)`, which this string never satisfies -- dead
-    code since Conpot has never emitted a dict here, same bug shape as the
-    OT-HTTP gap this closes for a different protocol.
-
-    Layout (see tpkt.py / cotp.py / s7.py):
-      TPKT:  version(1) reserved(1) length(2)            -- COTP starts @ 4
-      COTP:  length(1) tpdu_type(1) [opt_field(1) if 0xF0] -- only 0xF0 (Data
-             TPDU) carries an S7 payload; connection request/confirm frames
-             (0xE0) have none and degrade to {} rather than being mis-parsed.
-      S7:    magic(1)=0x32 pdu_type(1) reserved(2) request_id(2)
-             param_length(2) data_length(2) -- 10 bytes, request PDUs only
-             (pdu_type==1; Conpot only ever logs client-sent bytes as
-             "request", so anything else is unexpected, not a case to guess).
-      params[0] is the top-level S7 function code. A diagnostics/SZL read
-      (params[0] == 0x00) shares that one code across every SZL sub-request,
-      so the function that actually matters -- WHICH system status list, e.g.
-      17 = module identification -- lives 4 bytes into the DATA section
-      instead (mirrors S7.request_diagnostics's `data_ssl_id` extraction).
-
-    Malformed or truncated frames degrade to {} (or a partial dict) rather
-    than raising -- same degrade-gracefully contract as `_parse_modbus_request`.
+    `b'0300...'` (or the double-quoted repr) is what the JSON logger's
+    `json_default` makes of a bytes value. A bare hex string is accepted too,
+    so the parsers below do not depend on that repr surviving the Conpot 1.0
+    log format. None for anything that is not hex.
     """
-    if not raw:
-        return {}
+    if not isinstance(raw, str):
+        return None
     cleaned = raw.strip()
     if cleaned.startswith("b'") and cleaned.endswith("'"):
         cleaned = cleaned[2:-1]
     elif cleaned.startswith('b"') and cleaned.endswith('"'):
         cleaned = cleaned[2:-1]
     try:
-        b = bytes.fromhex(cleaned)
+        return bytes.fromhex(cleaned)
     except ValueError:
-        return {}
+        return None
 
+
+# COTP connection request (ISO 8073 / RFC 1006). The high nibble is the TPDU
+# code; the low nibble of a CR is the credit, zero from every S7 client seen
+# but not guaranteed, so the type is compared masked.
+_COTP_CR = 0xE0
+_COTP_DT = 0xF0
+_COTP_PARAM_TPDU_SIZE = 0xC0
+_COTP_PARAM_SRC_TSAP = 0xC1
+_COTP_PARAM_DST_TSAP = 0xC2
+
+# S7 userdata (ROSCTR 7). Group 4 is "CPU functions"; subfunction 1 in it is
+# Read SZL, which is what every S7 fingerprinting tool (nmap s7-info, plcscan,
+# snap7's get_cpu_info/read_szl) sends after the setup-communication job.
+_S7_ROSCTR_JOB = 1
+_S7_ROSCTR_USERDATA = 7
+_S7_UD_PARAM_HEAD = b"\x00\x01\x12"
+_S7_UD_GROUP_CPU = 4
+_S7_UD_SUBFUNCTION_READ_SZL = 1
+
+
+def _parse_cotp_cr(b: bytes, cotp_offset: int) -> dict[str, Any]:
+    """COTP connection request parameters, from the whole TPKT frame.
+
+    Layout from `cotp_offset`: length(1) type(1) dst_ref(2) src_ref(2)
+    class(1), then TLV parameters up to `1 + length`. Three of them carry
+    anything worth keeping:
+      0xC0  TPDU size, a code n meaning 2**n bytes. The decoded byte count is
+            emitted, not the code.
+      0xC1  calling (source) TSAP.
+      0xC2  called (destination) TSAP. For S7 its high byte is the connection
+            type (1 PG, 2 OP, 3 S7 basic) and its low byte is rack * 32 + slot,
+            which is how a scanner says which CPU it is addressing.
+
+    A TSAP is only emitted when it is one or two bytes: ISO allows longer
+    ones (some non-Siemens stacks send a text TSAP), and those have no integer
+    reading. Rack/slot/connection type are only read off a two-byte called
+    TSAP. The first occurrence of a parameter wins, and a TLV that runs past
+    the end of the TPDU ends the walk -- same degrade-gracefully contract as
+    every other parser here. No `s7_function` is ever set: a CR row must not
+    displace a real function in the session summary.
+    """
+    parsed: dict[str, Any] = {}
+    if len(b) < cotp_offset + 7:
+        return parsed
+    end = min(len(b), cotp_offset + 1 + b[cotp_offset])
+    pos = cotp_offset + 7
+    while pos + 2 <= end:
+        code, length = b[pos], b[pos + 1]
+        value = b[pos + 2 : pos + 2 + length]
+        if len(value) < length or pos + 2 + length > end:
+            break
+        pos += 2 + length
+
+        if code in (_COTP_PARAM_SRC_TSAP, _COTP_PARAM_DST_TSAP):
+            key = (
+                "s7_cotp_src_tsap"
+                if code == _COTP_PARAM_SRC_TSAP
+                else "s7_cotp_dst_tsap"
+            )
+            if key in parsed or length not in (1, 2):
+                continue
+            parsed[key] = int.from_bytes(value, "big")
+            if code == _COTP_PARAM_DST_TSAP and length == 2:
+                parsed["s7_conn_type"] = value[0]
+                parsed["s7_rack"] = value[1] >> 5
+                parsed["s7_slot"] = value[1] & 0x1F
+        elif code == _COTP_PARAM_TPDU_SIZE:
+            if "s7_tpdu_size" in parsed or length != 1:
+                continue
+            # 2**16 no longer fits the 0-65535 contract; no real stack
+            # proposes past code 0x0D (8192 bytes) anyway.
+            if value[0] <= 15:
+                parsed["s7_tpdu_size"] = 1 << value[0]
+    return parsed
+
+
+def _parse_s7_userdata(b: bytes, params_offset: int) -> dict[str, Any]:
+    """S7 userdata (ROSCTR 7) parameter and, for a Read SZL, its data.
+
+    Parameter layout from `params_offset`: head(3)=00 01 12, length(1),
+    method(1), type<<4 | group(1), subfunction(1), sequence(1). The data
+    section follows the parameters: return code(1), transport size(1),
+    length(2), then for Read SZL the SZL-ID(2) and index(2).
+
+    `s7_function` is set to `"szl_read"` only for group 4 / subfunction 1.
+    Other userdata (block lists, clock reads, ...) carries group and
+    subfunction but no function name -- inventing one would feed the session
+    summary and the MITRE rules a label nothing matches.
+    """
+    parsed: dict[str, Any] = {"s7_rosctr": _S7_ROSCTR_USERDATA}
+    s7_offset = params_offset - 10
+    param_length = _u16(b, s7_offset + 6)
+    data_length = _u16(b, s7_offset + 8)
+    params = b[params_offset : params_offset + param_length]
+    if len(params) < 7 or params[:3] != _S7_UD_PARAM_HEAD:
+        return parsed
+
+    group = params[5] & 0x0F
+    subfunction = params[6]
+    parsed["s7_ud_group"] = group
+    parsed["s7_ud_subfunction"] = subfunction
+    if group != _S7_UD_GROUP_CPU or subfunction != _S7_UD_SUBFUNCTION_READ_SZL:
+        return parsed
+    parsed["s7_function"] = "szl_read"
+
+    data_offset = params_offset + param_length
+    data = b[data_offset : data_offset + data_length]
+    if len(data) < 4:
+        return parsed
+    declared = int.from_bytes(data[2:4], "big")
+    if declared >= 2 and len(data) >= 6:
+        parsed["s7_szl_id"] = int.from_bytes(data[4:6], "big")
+    if declared >= 4 and len(data) >= 8:
+        parsed["s7_szl_index"] = int.from_bytes(data[6:8], "big")
+    return parsed
+
+
+def parse_s7comm_frame(b: bytes) -> dict[str, Any]:
+    """Interpret one TPKT+COTP(+S7) frame. Bytes in, `protocol_data` keys out.
+
+    Pure on purpose: the Conpot 1.0 spike changes the log format, and a parser
+    that only sees bytes survives that unchanged. `_parse_s7comm_request` is
+    the adapter from today's log shape.
+
+    Layout (see tpkt.py / cotp.py / s7.py):
+      TPKT:  version(1) reserved(1) length(2)              -- COTP starts @ 4
+      COTP:  length(1) tpdu_type(1) ...
+             0xE0 connection request: parsed by `_parse_cotp_cr`.
+             0xF0 data: opt_field(1), then the S7 PDU.
+             Anything else (CC, DR, ...) carries nothing and degrades to {}.
+      S7:    magic(1)=0x32 rosctr(1) reserved(2) request_id(2)
+             param_length(2) data_length(2) -- 10 bytes for ROSCTR 1 and 7,
+             the only two a client sends. Acks (2/3) are server-to-client and
+             degrade to {} rather than being guessed at.
+      ROSCTR 1 (job): params[0] is the top-level S7 function code. A job
+      with params[0] == 0x00 is treated as a diagnostics read, and its SZL-ID
+      from the DATA section is reported as the function (mirrors
+      S7.request_diagnostics's `data_ssl_id` extraction).
+      ROSCTR 7 (userdata): parsed by `_parse_s7_userdata`. This is where a
+      real SZL read lives -- before W1-06 it degraded to {}, which left 83% of
+      the substation persona's S7 exchanges blank.
+
+    Malformed or truncated frames degrade to {} (or a partial dict) rather
+    than raising -- same degrade-gracefully contract as `_parse_modbus_request`.
+    """
     if len(b) < 4 or b[0] != 3:
         return {}
     cotp_offset = 4
@@ -405,8 +528,9 @@ def _parse_s7comm_request(raw: str | None) -> dict[str, Any]:
         return {}
     cotp_length = b[cotp_offset]
     tpdu_type = b[cotp_offset + 1]
-    if tpdu_type != 0xF0:
-        # Connection request/confirm (0xE0) -- no S7 payload to parse.
+    if tpdu_type & 0xF0 == _COTP_CR:
+        return _parse_cotp_cr(b, cotp_offset)
+    if tpdu_type != _COTP_DT:
         return {}
 
     s7_offset = cotp_offset + 1 + cotp_length
@@ -415,7 +539,9 @@ def _parse_s7comm_request(raw: str | None) -> dict[str, Any]:
     if b[s7_offset] != 0x32:
         return {}
     pdu_type = b[s7_offset + 1]
-    if pdu_type != 1:
+    if pdu_type == _S7_ROSCTR_USERDATA:
+        return _parse_s7_userdata(b, s7_offset + 10)
+    if pdu_type != _S7_ROSCTR_JOB:
         return {}
 
     try:
@@ -445,6 +571,24 @@ def _parse_s7comm_request(raw: str | None) -> dict[str, Any]:
         return {"s7_function": param}
 
     return {"s7_function": param}
+
+
+def _parse_s7comm_request(raw: str | None) -> dict[str, Any]:
+    """`parse_s7comm_frame` over Conpot's logged request.
+
+    Conpot's s7_server.py logs `request` as `str(codecs.encode(data, "hex"))`
+    where `data` is the RAW WIRE FRAME (TPKT header + COTP header + the full
+    S7 PDU) -- the same `b'...'` hex-string shape `_parse_modbus_request`
+    already handles. The connection request is logged the same way, before
+    the handshake completes. The forwarder's s7comm branch used to gate on
+    `isinstance(request, dict)`, which this string never satisfies -- dead
+    code since Conpot has never emitted a dict here, same bug shape as the
+    OT-HTTP gap.
+    """
+    b = _decode_logged_hex(raw)
+    if b is None:
+        return {}
+    return parse_s7comm_frame(b)
 
 
 # `protocol_data` rides in a STIX SCO, a Postgres JSONB column and an LLM

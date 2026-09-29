@@ -583,12 +583,19 @@ class TestS7commParse:
         assert cf._parse_s7comm_request(raw) == {"s7_function": 0x04}
 
     def test_connection_request_tpdu_has_no_s7_payload(self):
-        """tpdu_type 0xE0 (COTP CR) precedes any S7 exchange -- nothing to
-        parse yet, not a parse failure.
+        """tpdu_type 0xE0 (COTP CR) precedes any S7 exchange -- it carries no
+        S7 PDU, so it never yields an `s7_function`.
+
+        Until W1-06 this asserted `{}` for every CR. The CR's own TLVs are now
+        parsed (see `TestS7UserdataAndCotp`); what stays true is that a CR too
+        short to hold its fixed part -- this synthetic one has none -- is
+        still `{}`, and that no CR is ever given a function.
         """
         cf = _reload_module()
         raw = _s7_frame(params=bytes([0x29]), tpdu_type=0xE0)
         assert cf._parse_s7comm_request(raw) == {}
+        real = cf._parse_s7comm_request(NMAP_S7_INFO_COTP_CR)
+        assert real and "s7_function" not in real
 
     @pytest.mark.parametrize(
         "raw", [None, "", "not-hex-at-all", "b'zz'", "b'03000004'"]
@@ -605,6 +612,269 @@ class TestS7commParse:
         cf = _reload_module()
         raw = _s7_frame(params=b"")  # param_length == 0 -- nothing to report
         assert cf._parse_s7comm_request(raw) == {}
+
+
+# ── W1-06: S7 userdata (ROSCTR 7) and the COTP connection request ────────────
+#
+# Real client frames only, each in Conpot's logged `b'...'` form. Sources:
+#   NMAP_*    nmap 7.92 scripts/s7-info.nse (Fedora nmap-7.92-11), the
+#             `stdnse.fromhex` literals at lines 192-202.
+#   PLCSCAN_* plcscan s7.py (github.com/meeas/plcscan), the frame its
+#             COTPConnectionPacket.pack() builds for the s7() defaults
+#             src_tsap=0x200 dst_tsap=0x201 tpdu_size=0x0a. src_ref is
+#             randint(1, 20) there; this capture has 12. Its SZL request is
+#             byte-identical to nmap's (nmap's script was lifted from it).
+#   SNAP7_*   libsnap7 through python-snap7 2.1.0, captured on loopback
+#             through a logging proxy on 2026-09-29: connect(ip, 0, 2),
+#             read_szl(0x0011, 0), get_cpu_info() (SZL 0x001C), db_read(1, 0, 4),
+#             and connect(ip, 2, 3) for the rack/slot case.
+#   PYSNAP7_* the pure-Python python-snap7 3.2.0 client, same capture method.
+#             Its SZL request sends return code 0x0a / transport size 0x00
+#             where every other tool sends 0xff / 0x09.
+NMAP_S7_INFO_COTP_CR = "b'0300001611e00000001400c1020100c2020102c0010a'"
+NMAP_S7_INFO_ALT_COTP_CR = "b'0300001611e00000000500c1020100c2020200c0010a'"
+NMAP_S7_INFO_ROSCTR_SETUP = "b'0300001902f08032010000000000080000f0000001000101e0'"
+NMAP_S7_INFO_SZL_0011 = (
+    "b'0300002102f080320700000000000800080001120411440100ff09000400110001'"
+)
+NMAP_S7_INFO_SZL_001C = (
+    "b'0300002102f080320700000000000800080001120411440100ff090004001c0001'"
+)
+PLCSCAN_COTP_CR = "b'0300001611e00000000c00c1020200c2020201c0010a'"
+SNAP7_COTP_CR = "b'0300001611e00000000100c0010ac1020100c2020102'"
+SNAP7_COTP_CR_RACK2_SLOT3 = "b'0300001611e00000000100c0010ac1020100c2020143'"
+SNAP7_SZL_0011_INDEX_0 = (
+    "b'0300002102f080320700000100000800080001120411440100ff09000400110000'"
+)
+SNAP7_SZL_001C = "b'0300002102f080320700000200000800080001120411440100ff090004001c0000'"
+SNAP7_DB_READ = "b'0300001f02f080320100000300000e00000401120a10020004000184000000'"
+PYSNAP7_SZL_0011 = (
+    "b'0300002102f0803207000000020008000800011204114401000a00000400110000'"
+)
+
+# Every key a Wave 1 Batch A S7 parse may emit. IronPot's C-1 allow-list and
+# the STIX `_OT_PROTOCOL_FIELDS` pass exactly these; anything else is dropped
+# downstream without a sound, so emitting it is a bug here.
+S7_BATCH_A_KEYS = {
+    "s7_function",
+    "s7_rosctr",
+    "s7_szl_id",
+    "s7_szl_index",
+    "s7_ud_group",
+    "s7_ud_subfunction",
+    "s7_cotp_src_tsap",
+    "s7_cotp_dst_tsap",
+    "s7_conn_type",
+    "s7_rack",
+    "s7_slot",
+    "s7_tpdu_size",
+}
+
+# (name, key) -> contract range; `type(v) is int`, so a bool never passes.
+S7_INT_RANGES = {
+    "s7_rosctr": (0, 255),
+    "s7_szl_id": (0, 65535),
+    "s7_szl_index": (0, 65535),
+    "s7_ud_group": (0, 15),
+    "s7_ud_subfunction": (0, 255),
+    "s7_cotp_src_tsap": (0, 65535),
+    "s7_cotp_dst_tsap": (0, 65535),
+    "s7_conn_type": (0, 255),
+    "s7_rack": (0, 7),
+    "s7_slot": (0, 31),
+    "s7_tpdu_size": (0, 65535),
+}
+
+
+def _assert_s7_contract(parsed: dict) -> None:
+    assert set(parsed) <= S7_BATCH_A_KEYS, set(parsed) - S7_BATCH_A_KEYS
+    for key, (low, high) in S7_INT_RANGES.items():
+        if key in parsed:
+            assert type(parsed[key]) is int, (key, parsed[key])
+            assert low <= parsed[key] <= high, (key, parsed[key])
+
+
+class TestS7UserdataAndCotp:
+    """W1-06 -- what the fingerprinting tools actually send.
+
+    Before this, a ROSCTR 7 PDU and a COTP CR both degraded to `{}`: 837 of
+    the substation persona's 1,011 S7 exchanges over 30 days carried nothing
+    but the asset identity.
+    """
+
+    @pytest.mark.parametrize(
+        "raw, szl_id, szl_index",
+        [
+            (NMAP_S7_INFO_SZL_0011, 0x0011, 0x0001),
+            (NMAP_S7_INFO_SZL_001C, 0x001C, 0x0001),
+            (SNAP7_SZL_0011_INDEX_0, 0x0011, 0x0000),
+            (SNAP7_SZL_001C, 0x001C, 0x0000),
+            (PYSNAP7_SZL_0011, 0x0011, 0x0000),
+        ],
+    )
+    def test_real_szl_reads(self, raw, szl_id, szl_index):
+        cf = _reload_module()
+        parsed = cf._parse_s7comm_request(raw)
+        assert parsed == {
+            "s7_rosctr": 7,
+            "s7_function": "szl_read",
+            "s7_ud_group": 4,
+            "s7_ud_subfunction": 1,
+            "s7_szl_id": szl_id,
+            "s7_szl_index": szl_index,
+        }
+        _assert_s7_contract(parsed)
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (
+                NMAP_S7_INFO_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0102,
+                    "s7_conn_type": 1,
+                    "s7_rack": 0,
+                    "s7_slot": 2,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            (
+                NMAP_S7_INFO_ALT_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0200,
+                    "s7_conn_type": 2,
+                    "s7_rack": 0,
+                    "s7_slot": 0,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            (
+                PLCSCAN_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0200,
+                    "s7_cotp_dst_tsap": 0x0201,
+                    "s7_conn_type": 2,
+                    "s7_rack": 0,
+                    "s7_slot": 1,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            # TPDU size TLV first: order is not fixed.
+            (
+                SNAP7_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0102,
+                    "s7_conn_type": 1,
+                    "s7_rack": 0,
+                    "s7_slot": 2,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            (
+                SNAP7_COTP_CR_RACK2_SLOT3,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0143,
+                    "s7_conn_type": 1,
+                    "s7_rack": 2,
+                    "s7_slot": 3,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+        ],
+    )
+    def test_real_connection_requests(self, raw, expected):
+        cf = _reload_module()
+        parsed = cf._parse_s7comm_request(raw)
+        assert parsed == expected
+        assert "s7_function" not in parsed  # never displaces the session summary
+        _assert_s7_contract(parsed)
+
+    def test_setup_communication_job_is_unchanged(self):
+        """The ROSCTR 1 path keeps its pre-W1-06 output exactly."""
+        cf = _reload_module()
+        assert cf._parse_s7comm_request(NMAP_S7_INFO_ROSCTR_SETUP) == {
+            "s7_function": 0xF0
+        }
+        assert cf._parse_s7comm_request(SNAP7_DB_READ) == {"s7_function": 0x04}
+
+    def test_non_szl_userdata_carries_group_but_no_function(self):
+        """Block-list userdata (group 3, subfunction 1): nothing matches a
+        made-up function name, so none is invented."""
+        cf = _reload_module()
+        b = bytearray(bytes.fromhex(NMAP_S7_INFO_SZL_0011[2:-1]))
+        b[22] = 0x43  # type 4 (request) | group 3 (block functions)
+        parsed = cf.parse_s7comm_frame(bytes(b))
+        assert parsed == {"s7_rosctr": 7, "s7_ud_group": 3, "s7_ud_subfunction": 1}
+
+    def test_userdata_without_the_parameter_head_reports_only_the_rosctr(self):
+        cf = _reload_module()
+        b = bytearray(bytes.fromhex(NMAP_S7_INFO_SZL_0011[2:-1]))
+        b[17:20] = b"\xde\xad\xbe"
+        assert cf.parse_s7comm_frame(bytes(b)) == {"s7_rosctr": 7}
+
+    @pytest.mark.parametrize("cut", range(1, 12))
+    def test_truncated_szl_read_degrades_without_raising(self, cut):
+        """Every prefix of a real SZL read parses to a subset of the full
+        answer -- never a wrong value, never an exception."""
+        cf = _reload_module()
+        full_bytes = bytes.fromhex(NMAP_S7_INFO_SZL_0011[2:-1])
+        full = cf.parse_s7comm_frame(full_bytes)
+        parsed = cf.parse_s7comm_frame(full_bytes[:-cut])
+        assert parsed.items() <= full.items()
+        _assert_s7_contract(parsed)
+
+    @pytest.mark.parametrize("cut", range(1, 16))
+    def test_truncated_connection_request_degrades_without_raising(self, cut):
+        cf = _reload_module()
+        full_bytes = bytes.fromhex(NMAP_S7_INFO_COTP_CR[2:-1])
+        full = cf.parse_s7comm_frame(full_bytes)
+        parsed = cf.parse_s7comm_frame(full_bytes[:-cut])
+        assert parsed.items() <= full.items()
+        _assert_s7_contract(parsed)
+
+    def test_long_or_odd_tlvs_are_skipped_not_misread(self):
+        """A text TSAP has no integer reading, and a TPDU-size code past 15
+        would not fit the 0-65535 contract: both are left out, the rest kept."""
+        cf = _reload_module()
+        cotp = (
+            bytes([0xE0, 0, 0, 0, 1, 0])  # CR, dst_ref, src_ref, class
+            + bytes([0xC1, 4])
+            + b"ABCD"  # 4-byte calling TSAP
+            + bytes([0xC2, 2, 0x03, 0x01])  # S7 basic, rack 0 slot 1
+            + bytes([0xC0, 1, 16])  # 2**16 does not fit
+        )
+        cotp = bytes([len(cotp)]) + cotp
+        frame = bytes([3, 0]) + (len(cotp) + 4).to_bytes(2, "big") + cotp
+        parsed = cf.parse_s7comm_frame(frame)
+        assert parsed == {
+            "s7_cotp_dst_tsap": 0x0301,
+            "s7_conn_type": 3,
+            "s7_rack": 0,
+            "s7_slot": 1,
+        }
+        _assert_s7_contract(parsed)
+
+    def test_szl_read_reaches_protocol_data_through_map_record(self):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "s7comm",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 10201,
+                    "request": NMAP_S7_INFO_SZL_001C,
+                    "id": "sess-w1-06",
+                }
+            )
+        pd = mapped["protocol_data"]
+        assert pd["s7_function"] == "szl_read"
+        assert pd["s7_szl_id"] == 0x001C
+        assert type(pd["s7_szl_id"]) is int
 
 
 class TestHttpParse:
