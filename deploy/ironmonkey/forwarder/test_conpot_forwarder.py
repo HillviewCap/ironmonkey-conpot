@@ -583,12 +583,19 @@ class TestS7commParse:
         assert cf._parse_s7comm_request(raw) == {"s7_function": 0x04}
 
     def test_connection_request_tpdu_has_no_s7_payload(self):
-        """tpdu_type 0xE0 (COTP CR) precedes any S7 exchange -- nothing to
-        parse yet, not a parse failure.
+        """tpdu_type 0xE0 (COTP CR) precedes any S7 exchange -- it carries no
+        S7 PDU, so it never yields an `s7_function`.
+
+        Until W1-06 this asserted `{}` for every CR. The CR's own TLVs are now
+        parsed (see `TestS7UserdataAndCotp`); what stays true is that a CR too
+        short to hold its fixed part -- this synthetic one has none -- is
+        still `{}`, and that no CR is ever given a function.
         """
         cf = _reload_module()
         raw = _s7_frame(params=bytes([0x29]), tpdu_type=0xE0)
         assert cf._parse_s7comm_request(raw) == {}
+        real = cf._parse_s7comm_request(NMAP_S7_INFO_COTP_CR)
+        assert real and "s7_function" not in real
 
     @pytest.mark.parametrize(
         "raw", [None, "", "not-hex-at-all", "b'zz'", "b'03000004'"]
@@ -605,6 +612,626 @@ class TestS7commParse:
         cf = _reload_module()
         raw = _s7_frame(params=b"")  # param_length == 0 -- nothing to report
         assert cf._parse_s7comm_request(raw) == {}
+
+
+# ── W1-06: S7 userdata (ROSCTR 7) and the COTP connection request ────────────
+#
+# Real client frames only, each in Conpot's logged `b'...'` form. Sources:
+#   NMAP_*    nmap 7.92 scripts/s7-info.nse (Fedora nmap-7.92-11), the
+#             `stdnse.fromhex` literals at lines 192-202.
+#   PLCSCAN_* plcscan s7.py (github.com/meeas/plcscan), the frame its
+#             COTPConnectionPacket.pack() builds for the s7() defaults
+#             src_tsap=0x200 dst_tsap=0x201 tpdu_size=0x0a. src_ref is
+#             randint(1, 20) there; this capture has 12. Its SZL request is
+#             byte-identical to nmap's (nmap's script was lifted from it).
+#   SNAP7_*   libsnap7 through python-snap7 2.1.0, captured on loopback
+#             through a logging proxy on 2026-09-29: connect(ip, 0, 2),
+#             read_szl(0x0011, 0), get_cpu_info() (SZL 0x001C), db_read(1, 0, 4),
+#             and connect(ip, 2, 3) for the rack/slot case.
+#   PYSNAP7_* the pure-Python python-snap7 3.2.0 client, same capture method.
+#             Its SZL request sends return code 0x0a / transport size 0x00
+#             where every other tool sends 0xff / 0x09.
+NMAP_S7_INFO_COTP_CR = "b'0300001611e00000001400c1020100c2020102c0010a'"
+NMAP_S7_INFO_ALT_COTP_CR = "b'0300001611e00000000500c1020100c2020200c0010a'"
+NMAP_S7_INFO_ROSCTR_SETUP = "b'0300001902f08032010000000000080000f0000001000101e0'"
+NMAP_S7_INFO_SZL_0011 = (
+    "b'0300002102f080320700000000000800080001120411440100ff09000400110001'"
+)
+NMAP_S7_INFO_SZL_001C = (
+    "b'0300002102f080320700000000000800080001120411440100ff090004001c0001'"
+)
+PLCSCAN_COTP_CR = "b'0300001611e00000000c00c1020200c2020201c0010a'"
+SNAP7_COTP_CR = "b'0300001611e00000000100c0010ac1020100c2020102'"
+SNAP7_COTP_CR_RACK2_SLOT3 = "b'0300001611e00000000100c0010ac1020100c2020143'"
+SNAP7_SZL_0011_INDEX_0 = (
+    "b'0300002102f080320700000100000800080001120411440100ff09000400110000'"
+)
+SNAP7_SZL_001C = "b'0300002102f080320700000200000800080001120411440100ff090004001c0000'"
+SNAP7_DB_READ = "b'0300001f02f080320100000300000e00000401120a10020004000184000000'"
+PYSNAP7_SZL_0011 = (
+    "b'0300002102f0803207000000020008000800011204114401000a00000400110000'"
+)
+
+# Every key a Wave 1 Batch A S7 parse may emit. IronPot's C-1 allow-list and
+# the STIX `_OT_PROTOCOL_FIELDS` pass exactly these; anything else is dropped
+# downstream without a sound, so emitting it is a bug here.
+S7_BATCH_A_KEYS = {
+    "s7_function",
+    "s7_rosctr",
+    "s7_szl_id",
+    "s7_szl_index",
+    "s7_ud_group",
+    "s7_ud_subfunction",
+    "s7_cotp_src_tsap",
+    "s7_cotp_dst_tsap",
+    "s7_conn_type",
+    "s7_rack",
+    "s7_slot",
+    "s7_tpdu_size",
+}
+
+# (name, key) -> contract range; `type(v) is int`, so a bool never passes.
+S7_INT_RANGES = {
+    "s7_rosctr": (0, 255),
+    "s7_szl_id": (0, 65535),
+    "s7_szl_index": (0, 65535),
+    "s7_ud_group": (0, 15),
+    "s7_ud_subfunction": (0, 255),
+    "s7_cotp_src_tsap": (0, 65535),
+    "s7_cotp_dst_tsap": (0, 65535),
+    "s7_conn_type": (0, 255),
+    "s7_rack": (0, 7),
+    "s7_slot": (0, 31),
+    "s7_tpdu_size": (0, 65535),
+}
+
+
+def _assert_s7_contract(parsed: dict) -> None:
+    assert set(parsed) <= S7_BATCH_A_KEYS, set(parsed) - S7_BATCH_A_KEYS
+    for key, (low, high) in S7_INT_RANGES.items():
+        if key in parsed:
+            assert type(parsed[key]) is int, (key, parsed[key])
+            assert low <= parsed[key] <= high, (key, parsed[key])
+
+
+class TestS7UserdataAndCotp:
+    """W1-06 -- what the fingerprinting tools actually send.
+
+    Before this, a ROSCTR 7 PDU and a COTP CR both degraded to `{}`: 837 of
+    the substation persona's 1,011 S7 exchanges over 30 days carried nothing
+    but the asset identity.
+    """
+
+    @pytest.mark.parametrize(
+        "raw, szl_id, szl_index",
+        [
+            (NMAP_S7_INFO_SZL_0011, 0x0011, 0x0001),
+            (NMAP_S7_INFO_SZL_001C, 0x001C, 0x0001),
+            (SNAP7_SZL_0011_INDEX_0, 0x0011, 0x0000),
+            (SNAP7_SZL_001C, 0x001C, 0x0000),
+            (PYSNAP7_SZL_0011, 0x0011, 0x0000),
+        ],
+    )
+    def test_real_szl_reads(self, raw, szl_id, szl_index):
+        cf = _reload_module()
+        parsed = cf._parse_s7comm_request(raw)
+        assert parsed == {
+            "s7_rosctr": 7,
+            "s7_function": "szl_read",
+            "s7_ud_group": 4,
+            "s7_ud_subfunction": 1,
+            "s7_szl_id": szl_id,
+            "s7_szl_index": szl_index,
+        }
+        _assert_s7_contract(parsed)
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (
+                NMAP_S7_INFO_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0102,
+                    "s7_conn_type": 1,
+                    "s7_rack": 0,
+                    "s7_slot": 2,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            (
+                NMAP_S7_INFO_ALT_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0200,
+                    "s7_conn_type": 2,
+                    "s7_rack": 0,
+                    "s7_slot": 0,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            (
+                PLCSCAN_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0200,
+                    "s7_cotp_dst_tsap": 0x0201,
+                    "s7_conn_type": 2,
+                    "s7_rack": 0,
+                    "s7_slot": 1,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            # TPDU size TLV first: order is not fixed.
+            (
+                SNAP7_COTP_CR,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0102,
+                    "s7_conn_type": 1,
+                    "s7_rack": 0,
+                    "s7_slot": 2,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+            (
+                SNAP7_COTP_CR_RACK2_SLOT3,
+                {
+                    "s7_cotp_src_tsap": 0x0100,
+                    "s7_cotp_dst_tsap": 0x0143,
+                    "s7_conn_type": 1,
+                    "s7_rack": 2,
+                    "s7_slot": 3,
+                    "s7_tpdu_size": 1024,
+                },
+            ),
+        ],
+    )
+    def test_real_connection_requests(self, raw, expected):
+        cf = _reload_module()
+        parsed = cf._parse_s7comm_request(raw)
+        assert parsed == expected
+        assert "s7_function" not in parsed  # never displaces the session summary
+        _assert_s7_contract(parsed)
+
+    def test_setup_communication_job_is_unchanged(self):
+        """The ROSCTR 1 path keeps its pre-W1-06 output exactly."""
+        cf = _reload_module()
+        assert cf._parse_s7comm_request(NMAP_S7_INFO_ROSCTR_SETUP) == {
+            "s7_function": 0xF0
+        }
+        assert cf._parse_s7comm_request(SNAP7_DB_READ) == {"s7_function": 0x04}
+
+    def test_non_szl_userdata_carries_group_but_no_function(self):
+        """Block-list userdata (group 3, subfunction 1): nothing matches a
+        made-up function name, so none is invented."""
+        cf = _reload_module()
+        b = bytearray(bytes.fromhex(NMAP_S7_INFO_SZL_0011[2:-1]))
+        b[22] = 0x43  # type 4 (request) | group 3 (block functions)
+        parsed = cf.parse_s7comm_frame(bytes(b))
+        assert parsed == {"s7_rosctr": 7, "s7_ud_group": 3, "s7_ud_subfunction": 1}
+
+    def test_userdata_without_the_parameter_head_reports_only_the_rosctr(self):
+        cf = _reload_module()
+        b = bytearray(bytes.fromhex(NMAP_S7_INFO_SZL_0011[2:-1]))
+        b[17:20] = b"\xde\xad\xbe"
+        assert cf.parse_s7comm_frame(bytes(b)) == {"s7_rosctr": 7}
+
+    @pytest.mark.parametrize("cut", range(1, 12))
+    def test_truncated_szl_read_degrades_without_raising(self, cut):
+        """Every prefix of a real SZL read parses to a subset of the full
+        answer -- never a wrong value, never an exception."""
+        cf = _reload_module()
+        full_bytes = bytes.fromhex(NMAP_S7_INFO_SZL_0011[2:-1])
+        full = cf.parse_s7comm_frame(full_bytes)
+        parsed = cf.parse_s7comm_frame(full_bytes[:-cut])
+        assert parsed.items() <= full.items()
+        _assert_s7_contract(parsed)
+
+    @pytest.mark.parametrize("cut", range(1, 16))
+    def test_truncated_connection_request_degrades_without_raising(self, cut):
+        cf = _reload_module()
+        full_bytes = bytes.fromhex(NMAP_S7_INFO_COTP_CR[2:-1])
+        full = cf.parse_s7comm_frame(full_bytes)
+        parsed = cf.parse_s7comm_frame(full_bytes[:-cut])
+        assert parsed.items() <= full.items()
+        _assert_s7_contract(parsed)
+
+    def test_long_or_odd_tlvs_are_skipped_not_misread(self):
+        """A text TSAP has no integer reading, and a TPDU-size code past 15
+        would not fit the 0-65535 contract: both are left out, the rest kept."""
+        cf = _reload_module()
+        cotp = (
+            bytes([0xE0, 0, 0, 0, 1, 0])  # CR, dst_ref, src_ref, class
+            + bytes([0xC1, 4])
+            + b"ABCD"  # 4-byte calling TSAP
+            + bytes([0xC2, 2, 0x03, 0x01])  # S7 basic, rack 0 slot 1
+            + bytes([0xC0, 1, 16])  # 2**16 does not fit
+        )
+        cotp = bytes([len(cotp)]) + cotp
+        frame = bytes([3, 0]) + (len(cotp) + 4).to_bytes(2, "big") + cotp
+        parsed = cf.parse_s7comm_frame(frame)
+        assert parsed == {
+            "s7_cotp_dst_tsap": 0x0301,
+            "s7_conn_type": 3,
+            "s7_rack": 0,
+            "s7_slot": 1,
+        }
+        _assert_s7_contract(parsed)
+
+    def test_szl_read_reaches_protocol_data_through_map_record(self):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            mapped = cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "s7comm",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 10201,
+                    "request": NMAP_S7_INFO_SZL_001C,
+                    "id": "sess-w1-06",
+                }
+            )
+        pd = mapped["protocol_data"]
+        assert pd["s7_function"] == "szl_read"
+        assert pd["s7_szl_id"] == 0x001C
+        assert type(pd["s7_szl_id"]) is int
+
+
+# ── W1-09: raw PDU retention ─────────────────────────────────────────────────
+#
+# Records exactly as the fork (main 3139710, default template) logged them on
+# loopback on 2026-09-29, driven with nmap s7-info's frames and the lab-bench
+# Modbus FC6 above. The S7 response is the full TPKT frame Conpot sent; the
+# Modbus response is the PDU only, which is what slave_db logs (the wire reply
+# was 000600000003018602).
+CONPOT_LOGGED_S7_CR = {
+    "request": NMAP_S7_INFO_COTP_CR,
+    "response": "b'030000130ed00000000000c1020000c2020000'",
+}
+CONPOT_LOGGED_S7_SZL_0011 = {
+    "request": NMAP_S7_INFO_SZL_0011,
+    "response": (
+        "b'0300004102f080320700000000000800280001120812840101ff0900240011000100"
+        "1c000100010000000000000000000000000000000000000000000000000000'"
+    ),
+}
+CONPOT_LOGGED_MODBUS_FC6 = {"request": REAL_FC6, "response": "b'8602'"}
+
+# IEC-104 I-frames from the c104 2.2.1 (lib60870-C) client, captured on
+# loopback through a logging proxy on 2026-09-29 against a c104 server with
+# common address 1. The single command's point is SELECT_AND_EXECUTE, so the
+# client sent a select (S/E = 1) and, after the positive ACT_CON, an execute.
+#                         APCI         type SQ/N COT  OA  COA   IOA     SCO
+C104_C_SC_NA_1_SELECT = "680e00000000" "2d" "01" "06" "00" "0100" "881300" "81"
+C104_C_SC_NA_1_EXECUTE = "680e02000200" "2d" "01" "06" "00" "0100" "881300" "01"
+#                         APCI         type SQ/N COT  OA  COA   IOA     DCO
+C104_C_DC_NA_1_ON = "680e04000600" "2e" "01" "06" "00" "0100" "891300" "02"
+#                         APCI         type SQ/N COT  OA  COA   IOA     float 110.5  QOS
+C104_C_SE_NC_1 = "681206000800" "32" "01" "06" "00" "0100" "8a1300" "0000dd42" "00"
+#                         APCI         type SQ/N COT  OA  COA   IOA     SVA -1234 QOS
+C104_C_SE_NB_1 = "681008000a00" "31" "01" "06" "00" "0100" "8b1300" "2efb" "00"
+#                         APCI         type SQ/N COT  OA  COA   IOA     QOI
+C104_C_IC_NA_1 = "680e0a000c00" "64" "01" "06" "00" "0100" "000000" "14"
+
+RAW_KEYS = {
+    "raw_request_hex",
+    "raw_response_hex",
+    "raw_request_truncated",
+    "raw_response_truncated",
+}
+
+
+class TestRawPduRetention:
+    @staticmethod
+    def _map(data_type, request, response=None, dst_port=10201):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            return cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": data_type,
+                    "src_ip": "203.0.113.9",
+                    "dst_port": dst_port,
+                    "request": request,
+                    "response": response,
+                    "id": "sess-w1-09",
+                }
+            )["protocol_data"]
+
+    @staticmethod
+    def _hex(logged: str) -> str:
+        return logged[2:-1]
+
+    @pytest.mark.parametrize("logged", [CONPOT_LOGGED_S7_CR, CONPOT_LOGGED_S7_SZL_0011])
+    def test_s7_request_and_response_are_kept_whole(self, logged):
+        pd = self._map("s7comm", logged["request"], logged["response"])
+        assert pd["raw_request_hex"] == self._hex(logged["request"])
+        assert pd["raw_response_hex"] == self._hex(logged["response"])
+        assert "raw_request_truncated" not in pd
+        assert "raw_response_truncated" not in pd
+
+    def test_modbus_request_is_the_adu_and_response_the_pdu(self):
+        pd = self._map(
+            "modbus",
+            CONPOT_LOGGED_MODBUS_FC6["request"],
+            CONPOT_LOGGED_MODBUS_FC6["response"],
+            dst_port=5020,
+        )
+        assert pd["raw_request_hex"] == "0006000000060106001000ff"
+        assert pd["raw_response_hex"] == "8602"
+        assert pd["written_value"] == 0x00FF  # the parse is untouched
+
+    def test_an_empty_logged_response_is_omitted(self):
+        """slave_db logs b'' when it built the exception reply itself."""
+        pd = self._map("modbus", REAL_FC3, "b''", dst_port=5020)
+        assert "raw_response_hex" not in pd
+        assert pd["raw_request_hex"] == self._hex(REAL_FC3)
+
+    def test_cut_at_1024_hex_chars_and_flagged(self):
+        """A scanner pipelining 16 SZL reads lands in one 1024-byte recv():
+        528 bytes, past the 512-byte cap. Only the first frame is parsed."""
+        pipelined = "b'" + self._hex(NMAP_S7_INFO_SZL_0011) * 16 + "'"
+        pd = self._map("s7comm", pipelined, pipelined)
+        for side in ("request", "response"):
+            assert len(pd[f"raw_{side}_hex"]) == 1024
+            assert pd[f"raw_{side}_truncated"] is True
+            assert pd[f"raw_{side}_hex"] == self._hex(pipelined)[:1024]
+        assert pd["s7_szl_id"] == 0x0011
+
+    def test_exactly_512_bytes_is_not_truncated(self):
+        body = self._hex(NMAP_S7_INFO_SZL_0011) * 16  # 528 bytes
+        exact = "b'" + body[:1024] + "'"
+        pd = self._map("s7comm", exact)
+        assert len(pd["raw_request_hex"]) == 1024
+        assert "raw_request_truncated" not in pd
+
+    def test_hex_is_lowercase_and_even_length(self):
+        """Conpot's codecs output is already lowercase; a bare upper-case hex
+        string (the shape a future log format might carry) is normalized."""
+        upper = self._hex(NMAP_S7_INFO_SZL_0011).upper()
+        pd = self._map("s7comm", upper)
+        assert pd["raw_request_hex"] == self._hex(NMAP_S7_INFO_SZL_0011)
+        assert pd["raw_request_hex"] == pd["raw_request_hex"].lower()
+        assert len(pd["raw_request_hex"]) % 2 == 0
+
+    @pytest.mark.parametrize("logged", ["b'030'", "b'zz'", "not hex", None, 7])
+    def test_non_hex_is_not_forwarded(self, logged):
+        pd = self._map("s7comm", logged, logged)
+        assert not RAW_KEYS & set(pd)
+
+    @pytest.mark.parametrize(
+        "data_type, logged, dst_port",
+        [
+            ("snmp", {"command": "get", "oid": "1.3.6.1.2.1.1.1.0"}, 16100),
+            ("bacnet", {"service": "whoIs", "raw": "810b000c"}, 47808),
+            ("enip", {"enip_command": 0x63, "raw": "6300"}, 44818),
+            ("http", "('/', [], None)", 8800),
+        ],
+    )
+    def test_never_for_snmp_http_bacnet_or_enip(self, data_type, logged, dst_port):
+        pd = self._map(data_type, logged, "b'0300001611'", dst_port=dst_port)
+        assert not RAW_KEYS & set(pd)
+
+    def test_iec104_request_raw_is_forwarded_without_a_response(self):
+        raw = C104_C_SC_NA_1_SELECT
+        pd = self._map(
+            "iec104",
+            {"type_id": 45, "cot": 6, "ioa": 5000, "raw": raw},
+            None,
+            dst_port=2404,
+        )
+        assert pd["raw_request_hex"] == raw
+        assert "raw_response_hex" not in pd
+        assert (pd["type_id"], pd["cot"], pd["ioa"]) == (45, 6, 5000)
+
+    def test_iec104_record_without_raw_is_unchanged(self):
+        """A record from an image predating W1-09 maps as it always has."""
+        pd = self._map(
+            "iec104", {"type_id": 100, "cot": 6, "ioa": 0}, None, dst_port=2404
+        )
+        assert not RAW_KEYS & set(pd)
+        assert pd["type_id"] == 100
+
+
+# ── W1-08a: IEC-104 command values ───────────────────────────────────────────
+#
+# `request` dicts exactly as the fork's `_record_asdu_event` logs them for the
+# c104 frames above (pinned on the Conpot side by
+# conpot/tests/test_iec104_server.py::TestRecordAsduCommandValues), each put
+# through a JSON round trip the way the log file does.
+FORK_LOGGED_C_SC_SELECT = {
+    "type_id": 45,
+    "raw": C104_C_SC_NA_1_SELECT,
+    "cot": 6,
+    "ioa": 5000,
+    "coa": 1,
+    "value": 1,
+    "select": True,
+    "qualifier": 0,
+}
+FORK_LOGGED_C_SC_EXECUTE = {
+    **FORK_LOGGED_C_SC_SELECT,
+    "raw": C104_C_SC_NA_1_EXECUTE,
+    "select": False,
+}
+FORK_LOGGED_C_SE_NC = {
+    "type_id": 50,
+    "raw": C104_C_SE_NC_1,
+    "cot": 6,
+    "ioa": 5002,
+    "coa": 1,
+    "value": 110.5,
+    "select": False,
+    "qualifier": 0,
+}
+FORK_LOGGED_C_SE_NB = {
+    "type_id": 49,
+    "raw": C104_C_SE_NB_1,
+    "cot": 6,
+    "ioa": 5003,
+    "coa": 1,
+    "value": -1234,
+    "select": False,
+    "qualifier": 0,
+}
+FORK_LOGGED_C_IC = {
+    "type_id": 100,
+    "raw": C104_C_IC_NA_1,
+    "cot": 6,
+    "ioa": 0,
+    "coa": 1,
+    "qualifier": 20,
+}
+
+# Every protocol_data key an IEC-104 record may carry after Batch A, besides
+# the asset identity. Both downstream allow-lists pass exactly these.
+IEC104_KEYS = {
+    "type_id",
+    "cot",
+    "ioa",
+    "iec104_value",
+    "iec104_select",
+    "iec104_qualifier",
+    "iec104_coa",
+    "raw_request_hex",
+    "raw_request_truncated",
+}
+ASSET_KEYS = {"asset_type", "vendor", "model"}
+
+
+class TestIec104CommandValues:
+    @staticmethod
+    def _map(request):
+        cf = _reload_module()
+        with patch.object(cf, "_get_parent_session_id", return_value=None):
+            return cf._map_record(
+                {
+                    "event_type": None,
+                    "data_type": "IEC104",
+                    "src_ip": "203.0.113.9",
+                    "dst_port": 2404,
+                    "request": json.loads(json.dumps(request)),
+                    "response": None,
+                    "id": "sess-w1-08a",
+                }
+            )["protocol_data"]
+
+    @pytest.mark.parametrize(
+        "logged, value, select, qualifier",
+        [
+            (FORK_LOGGED_C_SC_SELECT, 1, True, 0),
+            (FORK_LOGGED_C_SC_EXECUTE, 1, False, 0),
+            (FORK_LOGGED_C_SE_NC, 110.5, False, 0),
+            (FORK_LOGGED_C_SE_NB, -1234, False, 0),
+        ],
+    )
+    def test_commands_carry_value_select_qualifier_and_coa(
+        self, logged, value, select, qualifier
+    ):
+        pd = self._map(logged)
+        assert pd["iec104_value"] == value
+        assert type(pd["iec104_value"]) is type(value)
+        assert pd["iec104_select"] is select
+        assert pd["iec104_qualifier"] == qualifier
+        assert type(pd["iec104_qualifier"]) is int
+        assert pd["iec104_coa"] == 1
+        assert type(pd["iec104_coa"]) is int
+        assert pd["raw_request_hex"] == logged["raw"]
+        assert set(pd) <= IEC104_KEYS | ASSET_KEYS, set(pd) - IEC104_KEYS - ASSET_KEYS
+
+    def test_select_and_execute_are_distinguishable(self):
+        """Select-before-operate is two exchanges; the pair is only visible
+        because the S/E bit survives to protocol_data."""
+        select = self._map(FORK_LOGGED_C_SC_SELECT)
+        execute = self._map(FORK_LOGGED_C_SC_EXECUTE)
+        assert (select["iec104_select"], execute["iec104_select"]) == (True, False)
+
+    def test_interrogation_has_a_qualifier_and_no_value(self):
+        pd = self._map(FORK_LOGGED_C_IC)
+        assert pd["iec104_qualifier"] == 20
+        assert "iec104_value" not in pd
+        assert "iec104_select" not in pd
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"value": "1"},
+            {"value": None},
+            {"value": [1]},
+            {"select": 1},
+            {"select": "true"},
+            {"qualifier": True},
+            {"qualifier": 256},
+            {"qualifier": -1},
+            {"qualifier": 2.0},
+            {"coa": 65536},
+            {"coa": False},
+        ],
+    )
+    def test_out_of_contract_values_are_left_out(self, bad):
+        """IronPot would drop each of these; they are never sent."""
+        (key,) = bad
+        pd = self._map({**FORK_LOGGED_C_SC_SELECT, **bad})
+        assert f"iec104_{key}" not in pd
+        assert pd["type_id"] == 45  # the rest of the record is unaffected
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_is_left_out(self, value):
+        cf = _reload_module()
+        parsed = cf._parse_iec104_request({**FORK_LOGGED_C_SE_NC, "value": value})
+        assert "iec104_value" not in parsed
+
+    def test_bool_value_passes(self):
+        pd = self._map({**FORK_LOGGED_C_SC_SELECT, "value": True})
+        assert pd["iec104_value"] is True
+
+    def test_record_from_a_pre_w1_image_is_unchanged(self):
+        pd = self._map({"type_id": 45, "cot": 6, "ioa": 5000})
+        assert set(pd) - ASSET_KEYS == {"type_id", "cot", "ioa"}
+
+
+class TestBatchAKeyContract:
+    """Every key Batch A adds, on every real frame, is one both downstream
+    allow-lists accept -- anything else would be dropped without a sound."""
+
+    @pytest.mark.parametrize(
+        "logged",
+        [
+            CONPOT_LOGGED_S7_CR,
+            CONPOT_LOGGED_S7_SZL_0011,
+            {"request": NMAP_S7_INFO_ALT_COTP_CR, "response": None},
+            {"request": NMAP_S7_INFO_ROSCTR_SETUP, "response": None},
+            {"request": NMAP_S7_INFO_SZL_001C, "response": None},
+            {"request": PLCSCAN_COTP_CR, "response": None},
+            {"request": SNAP7_COTP_CR, "response": None},
+            {"request": SNAP7_COTP_CR_RACK2_SLOT3, "response": None},
+            {"request": SNAP7_SZL_0011_INDEX_0, "response": None},
+            {"request": SNAP7_SZL_001C, "response": None},
+            {"request": SNAP7_DB_READ, "response": None},
+            {"request": PYSNAP7_SZL_0011, "response": None},
+        ],
+    )
+    def test_s7(self, logged):
+        pd = TestRawPduRetention._map("s7comm", logged["request"], logged["response"])
+        extra = set(pd) - S7_BATCH_A_KEYS - RAW_KEYS - ASSET_KEYS
+        assert not extra, extra
+        _assert_s7_contract({k: v for k, v in pd.items() if k in S7_BATCH_A_KEYS})
+        assert pd["raw_request_hex"] == logged["request"][2:-1]
+
+    @pytest.mark.parametrize(
+        "logged",
+        [
+            FORK_LOGGED_C_SC_SELECT,
+            FORK_LOGGED_C_SC_EXECUTE,
+            FORK_LOGGED_C_SE_NC,
+            FORK_LOGGED_C_SE_NB,
+            FORK_LOGGED_C_IC,
+        ],
+    )
+    def test_iec104(self, logged):
+        pd = TestIec104CommandValues._map(logged)
+        extra = set(pd) - IEC104_KEYS - ASSET_KEYS
+        assert not extra, extra
 
 
 class TestHttpParse:

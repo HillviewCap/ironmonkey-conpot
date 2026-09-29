@@ -14,6 +14,8 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+import math
+
 import gevent
 import natsort
 from conpot.protocols.IEC104.DeviceDataController import addr_in_hex, inro_response
@@ -22,6 +24,89 @@ import conpot.core as conpot_core
 from .frames import *
 
 logger = logging.getLogger(__name__)
+
+
+# Wave 1, W1-08a: what a command asked for, not just which point it named.
+# Grouped by the element each command type carries; the time-tagged variants
+# (58-63) carry the same element followed by a CP56Time.
+_SCO_TYPES = (45, 58)  # single command, SCS
+_DCO_TYPES = (46, 59)  # double command, DCS
+_RCO_TYPES = (47, 60)  # regulating step command, RCS
+_NVA_TYPES = (48, 61)  # set point, normalized value
+_SVA_TYPES = (49, 62)  # set point, scaled value
+_FLOAT_TYPES = (50, 63)  # set point, short floating point
+# System commands whose only content is a qualifier byte: QOI on a general
+# interrogation (20 = station), QCC on a counter interrogation.
+_QUALIFIER_ONLY_TYPES = {100: "QOI", 101: "QCC"}
+_COMMAND_STATE_FIELD = {
+    **{t: "SCS" for t in _SCO_TYPES},
+    **{t: "DCS" for t in _DCO_TYPES},
+    **{t: "RCS" for t in _RCO_TYPES},
+}
+
+
+def _field(packet, name):
+    """`packet.getfieldval(name)`, or None where the dissection has no such
+    field -- a truncated or mistyped ASDU, ordinary probing traffic."""
+    try:
+        return packet.getfieldval(name)
+    except AttributeError:
+        return None
+
+
+def _asdu_command_fields(container, type_id):
+    """`coa`, `value`, `select` and `qualifier` of one command ASDU.
+
+    - `value`: SCS/DCS/RCS as the wire's int state code; a scaled set point
+      as its int; a normalized set point as a float in [-1, 1); a short float
+      set point as its float, dropped when NaN or infinite (JSON has no
+      spelling for either, and the forwarder would discard it anyway).
+    - `select`: the S/E bit -- the top bit of the QOC (commands) or QOS (set
+      points). True is a select, False an execute; a direct-execute command
+      is an execute.
+    - `qualifier`: the rest of that byte -- QU (0-31) of a QOC, QL (0-127) of
+      a QOS -- or the whole QOI/QCC of an interrogation.
+
+    Only the first information object is read, as for `ioa`. Anything the
+    dissection lacks is left out rather than defaulted.
+    """
+    fields = {}
+    coa = _field(container, "COA")
+    if isinstance(coa, int):
+        fields["coa"] = coa
+
+    value = None
+    qualifier_byte = None
+    if type_id in _COMMAND_STATE_FIELD:
+        value = _field(container, _COMMAND_STATE_FIELD[type_id])
+        qoc = _field(container, "QOC")  # S/E(1) + QU(5)
+        if isinstance(qoc, int):
+            fields["select"] = bool(qoc >> 5 & 1)
+            fields["qualifier"] = qoc & 0x1F
+    elif type_id in _NVA_TYPES + _SVA_TYPES + _FLOAT_TYPES:
+        if type_id in _NVA_TYPES:
+            raw_value = _field(container, "NVA")
+            value = raw_value / 32768.0 if isinstance(raw_value, int) else None
+        elif type_id in _SVA_TYPES:
+            value = _field(container, "SVA")
+        else:
+            value = _field(container, "FPNumber")
+            if not (isinstance(value, float) and math.isfinite(value)):
+                value = None
+        qos = _field(container, "QOS")
+        if qos is not None:
+            select = _field(qos, "seq")  # the S/E bit, named `seq` in frames.py
+            if isinstance(select, int):
+                fields["select"] = bool(select)
+            qualifier_byte = _field(qos, "QL")
+    elif type_id in _QUALIFIER_ONLY_TYPES:
+        qualifier_byte = _field(container, _QUALIFIER_ONLY_TYPES[type_id])
+
+    if isinstance(value, (int, float)):
+        fields["value"] = value
+    if isinstance(qualifier_byte, int):
+        fields["qualifier"] = qualifier_byte
+    return fields
 
 
 class IEC104(object):
@@ -195,7 +280,7 @@ class IEC104(object):
         except InvalidFieldValueException as ex:
             logger.warning("InvalidFieldValue: %s. (%s)", ex, self.session_id)
 
-    def _record_asdu_event(self, container, type_id):
+    def _record_asdu_event(self, container, type_id, frame=None):
         """Log the ASDU's type/cot/ioa so the session carries real protocol
         detail instead of only NEW_CONNECTION/CONNECTION_LOST.
 
@@ -209,8 +294,21 @@ class IEC104(object):
         AttributeError -- ordinary probing traffic (a bogus or unsupported
         type_id), not a fault, so it degrades to whatever was extracted
         rather than dropping the event.
+
+        `raw` is the I-frame itself (APCI + ASDU) as lowercase hex, so the
+        forwarder can keep the exact bytes (Wave 1, W1-09). It sits inside
+        `request` because the JSON logger exports nothing else from the
+        event. An I-frame is at most 255 bytes, well inside the forwarder's
+        512-byte cap.
+
+        `coa`, `value`, `select` and `qualifier` (Wave 1, W1-08a) are what a
+        command asked for -- see `_asdu_command_fields`. They are recorded
+        before, and independently of, whether this device answers the
+        command.
         """
         request = {"type_id": type_id}
+        if frame:
+            request["raw"] = bytes(frame).hex()
         try:
             request["cot"] = container.getfieldval("COT")
         except AttributeError:
@@ -219,6 +317,7 @@ class IEC104(object):
             request["ioa"] = container.getfieldval("IOA")
         except AttributeError:
             pass
+        request.update(_asdu_command_fields(container, type_id))
         self.session.add_event({"request": request})
 
     # === i_frame
@@ -284,7 +383,7 @@ class IEC104(object):
         request_coa = container.getfieldval("COA")
 
         if self.session is not None:
-            self._record_asdu_event(container, type_id)
+            self._record_asdu_event(container, type_id, frame)
 
         # 45: Single command
         if type_id == TypeIdentification["C_SC_NA_1"] and request_coa == common_address:
